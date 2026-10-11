@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1f2a60"/>
+      <stop offset="1" stop-color="#090d24"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="37" cy="30" r="24" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7b88ff" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#7b88ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="star" x1="0" y1="10" x2="0" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffe38a"/>
+      <stop offset="1" stop-color="#ffb020"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#sky)"/>
+  <circle cx="13.5" cy="15" r="1" fill="#ffffff" opacity="0.8"/>
+  <circle cx="51.5" cy="52" r="0.8" fill="#ffffff" opacity="0.6"/>
+  <circle cx="37" cy="30" r="24" fill="url(#glow)"/>
+  <path fill="none" stroke="#f2a93b" stroke-width="3.6" stroke-linecap="round"
+        d="M9 46L13.5 41.5M13 50.5L23 40.5M22.5 49L27 44.5"/>
+  <path fill="url(#star)" stroke="url(#star)" stroke-width="4" stroke-linejoin="round"
+        d="M29.39 13.69L38.72 21.17L50.16 17.72L45.93 28.9L52.74 38.73L40.8 38.16L33.57 47.67L30.42 36.14L19.13 32.19L29.13 25.64Z"/>
+</svg>

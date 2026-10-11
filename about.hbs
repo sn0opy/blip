@@ -1,0 +1,19 @@
+blip: third-party licenses
+==========================
+
+blip is licensed under the MIT license. It includes the following third-party software.
+
+This software is based in part on the work of the Independent JPEG Group.
+
+{{#each licenses}}
+--------------------------------------------------------------------------------
+{{name}}
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}
