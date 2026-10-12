@@ -10,7 +10,7 @@ astro images, hardware-accelerated on the GPU.
 Download the Windows installer (or the portable `.zip`, which needs no setup), the macOS disk
 image, or the Linux Flatpak (x86_64 or aarch64) or `.tar.gz` from the
 [releases](../../releases). Install the Flatpak with
-`flatpak install --user blip-<version>-<arch>.flatpak`.
+`flatpak install --user blip-<version>-linux-<arch>.flatpak`.
 
 To build from source you need Rust 1.95 or newer (the MSVC toolchain on Windows).
 

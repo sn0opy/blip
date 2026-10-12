@@ -1,7 +1,7 @@
 # Builds the Windows packages into dist\:
 #
-# - blip_<version>_x64-setup.exe, the installer
-# - blip-<version>-x64.zip with just blip.exe and the license files, no setup
+# - blip-<version>-windows-x64-setup.exe, the installer
+# - blip-<version>-windows-x64.zip with just blip.exe and the license files, no setup
 #
 #   .\scripts\package-windows.ps1
 #
@@ -30,8 +30,10 @@ cargo packager --release --formats nsis
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $version = (cargo pkgid) -replace '.*[@#]', ''
+# cargo-packager names the installer blip_<version>_x64-setup.exe.
+Move-Item "dist\*-setup.exe" "dist\blip-$version-windows-x64-setup.exe" -Force
 $stage = "target\windows-portable"
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory $stage | Out-Null
 Copy-Item target\release\blip.exe, LICENSE, target\THIRD_PARTY_LICENSES.txt $stage
-Compress-Archive -Path "$stage\*" -DestinationPath "dist\blip-$version-x64.zip" -Force
+Compress-Archive -Path "$stage\*" -DestinationPath "dist\blip-$version-windows-x64.zip" -Force

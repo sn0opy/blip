@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds the Linux release for the current architecture (x86_64 or aarch64) into dist/:
 #
-# - blip-<version>-<arch>.flatpak, a single-file Flatpak bundle (sh.sascha.blip)
-# - blip-<version>-<arch>-linux.tar.gz with the standalone binary and the license files
+# - blip-<version>-linux-<arch>.flatpak, a single-file Flatpak bundle (sh.sascha.blip)
+# - blip-<version>-linux-<arch>.tar.gz with the standalone binary and the license files
 #   (the archive keeps the executable bit)
 #
 #   ./scripts/package-linux.sh
@@ -30,10 +30,10 @@ flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/fl
 rm -rf target/flatpak-repo target/flatpak-build
 flatpak-builder --user --force-clean --install-deps-from=flathub \
     --repo=target/flatpak-repo target/flatpak-build packaging/flatpak/sh.sascha.blip.yml
-flatpak build-bundle --arch="$arch" target/flatpak-repo "dist/blip-${version}-${arch}.flatpak" sh.sascha.blip
+flatpak build-bundle --arch="$arch" target/flatpak-repo "dist/blip-${version}-linux-${arch}.flatpak" sh.sascha.blip
 
 stage=target/linux-tar
 rm -rf "$stage"
 mkdir -p "$stage"
 cp target/release/blip LICENSE target/THIRD_PARTY_LICENSES.txt "$stage"
-tar -czf "dist/blip-${version}-${arch}-linux.tar.gz" -C "$stage" .
+tar -czf "dist/blip-${version}-linux-${arch}.tar.gz" -C "$stage" .

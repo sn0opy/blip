@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the macOS app bundle and disk image into dist/ as a universal binary
+# Builds the macOS app bundle and disk image (blip-<version>-macos-universal.dmg) into dist/ as a universal binary
 # (Apple Silicon + Intel):
 #
 #   ./scripts/package-macos.sh
@@ -32,3 +32,7 @@ lipo -create -output "$universal/blip" \
 cargo about generate about.hbs -o target/THIRD_PARTY_LICENSES.txt
 
 cargo packager --release --target universal-apple-darwin --formats app,dmg
+
+version=$(cargo pkgid | sed 's/.*[@#]//')
+# cargo-packager names the disk image blip_<version>_<arch>.dmg.
+mv dist/*.dmg "dist/blip-${version}-macos-universal.dmg"
