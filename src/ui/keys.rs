@@ -9,7 +9,6 @@ impl App {
         let pressed = |key: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key));
         let pressed_cmd = |key: Key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, key));
 
-        // `?` usually needs Shift; consume_key ignores extra Shift for logical keys.
         if pressed(Key::Questionmark) || pressed(Key::F1) {
             self.show_help = true;
             return;
@@ -39,7 +38,7 @@ impl App {
         if pressed(Key::Delete) || pressed(Key::Backspace) {
             self.confirm_delete = self.current().cloned();
         }
-        if pressed(Key::F5) {
+        if pressed(Key::F5) || pressed_cmd(Key::R) {
             self.refresh();
         }
         if pressed(Key::I) {

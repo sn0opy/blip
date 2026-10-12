@@ -1,14 +1,5 @@
-/target
+.DS_Store
 /dist
-
-# Sample images and renders used while developing
-*.fit
-*.fits
-*.fts
-*.fz
-/*.png
-/*.jpg
-
-# Local dev tools and experiments (former examples/)
-/scratch
 /result
+/scratch
+/target

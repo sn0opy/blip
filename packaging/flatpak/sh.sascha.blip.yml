@@ -1,0 +1,49 @@
+# Flatpak manifest, built by scripts/package-linux.sh from the already compiled release binary.
+# The runtime provides the Wayland/X11, xkbcommon and Vulkan/Mesa libraries blip loads at runtime.
+app-id: sh.sascha.blip
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+command: blip
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # Opens image folders anywhere the user points it at (also via the file chooser portal).
+  - --filesystem=home
+modules:
+  - name: blip
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 blip /app/bin/blip
+      - install -Dm644 LICENSE /app/share/licenses/sh.sascha.blip/LICENSE
+      - install -Dm644 THIRD_PARTY_LICENSES.txt /app/share/licenses/sh.sascha.blip/THIRD_PARTY_LICENSES.txt
+      - install -Dm644 sh.sascha.blip.desktop /app/share/applications/sh.sascha.blip.desktop
+      - install -Dm644 sh.sascha.blip.metainfo.xml /app/share/metainfo/sh.sascha.blip.metainfo.xml
+      - for s in 16 32 48 64 128 256 512; do install -Dm644 icon-$s.png /app/share/icons/hicolor/${s}x${s}/apps/sh.sascha.blip.png; done
+    sources:
+      - type: file
+        path: ../../target/release/blip
+      - type: file
+        path: ../../LICENSE
+      - type: file
+        path: ../../target/THIRD_PARTY_LICENSES.txt
+      - type: file
+        path: sh.sascha.blip.desktop
+      - type: file
+        path: sh.sascha.blip.metainfo.xml
+      - type: file
+        path: ../../assets/icons/icon-16.png
+      - type: file
+        path: ../../assets/icons/icon-32.png
+      - type: file
+        path: ../../assets/icons/icon-48.png
+      - type: file
+        path: ../../assets/icons/icon-64.png
+      - type: file
+        path: ../../assets/icons/icon-128.png
+      - type: file
+        path: ../../assets/icons/icon-256.png
+      - type: file
+        path: ../../assets/icons/icon-512.png

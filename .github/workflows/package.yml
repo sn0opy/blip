@@ -24,7 +24,9 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: blip-windows
-          path: dist/*-setup.exe
+          path: |
+            dist/*-setup.exe
+            dist/*-x64.zip
   macos:
     runs-on: macos-latest
     steps:
@@ -45,25 +47,31 @@ jobs:
           name: blip-macos
           path: dist/*.dmg
   linux:
-    # The oldest supported runner, so the binary runs on glibc versions this old or newer.
-    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Install cargo-packager
-        run: cargo install cargo-packager --version 0.11.8 --locked
+      - name: Install Flatpak tooling
+        run: sudo apt-get update && sudo apt-get install -y flatpak flatpak-builder
       - name: Install cargo-about
         run: cargo install cargo-about --version 0.9.2 --locked --features cli
       - name: Package
         run: bash scripts/package-linux.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: blip-linux
+          name: blip-linux-${{ matrix.arch }}
           path: |
-            dist/*.deb
+            dist/*.flatpak
             dist/*-linux.tar.gz
   release:
     if: startsWith(github.ref, 'refs/tags/v')

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=blip
+Comment=Fast FITS image blinker for astrophotography
+Exec=blip
+Icon=sh.sascha.blip
+Terminal=false
+Categories=Graphics;Photography;
+MimeType=image/fits;

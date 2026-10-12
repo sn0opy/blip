@@ -18,7 +18,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("D", "Debug info (timings, stretch, cache, GPU)"),
     ("E, Ctrl+S", "Export as PNG / JPEG (full resolution)"),
     ("O, Ctrl+O", "Open folder"),
-    ("F5", "Rescan folder"),
+    ("F5, Ctrl+R", "Rescan folder"),
     ("?, F1", "This help"),
 ];
 

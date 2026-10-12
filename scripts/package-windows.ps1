@@ -1,4 +1,7 @@
-# Builds the Windows installer: dist\blip_<version>_x64-setup.exe
+# Builds the Windows packages into dist\:
+#
+# - blip_<version>_x64-setup.exe, the installer
+# - blip-<version>-x64.zip with just blip.exe and the license files, no setup
 #
 #   .\scripts\package-windows.ps1
 #
@@ -24,4 +27,11 @@ cargo about generate about.hbs -o target/THIRD_PARTY_LICENSES.txt
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 cargo packager --release --formats nsis
-exit $LASTEXITCODE
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$version = (cargo pkgid) -replace '.*[@#]', ''
+$stage = "target\windows-portable"
+Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+New-Item -ItemType Directory $stage | Out-Null
+Copy-Item target\release\blip.exe, LICENSE, target\THIRD_PARTY_LICENSES.txt $stage
+Compress-Archive -Path "$stage\*" -DestinationPath "dist\blip-$version-x64.zip" -Force

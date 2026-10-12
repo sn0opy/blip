@@ -9,7 +9,12 @@ license = "MIT"
 
 [dependencies]
 bytemuck = { version = "1.25.2", features = ["derive", "extern_crate_alloc"] }
-eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "persistence"] }
+eframe = { version = "0.36.2", default-features = false, features = [
+    "wgpu",
+    "default_fonts",
+    "accesskit",
+    "persistence",
+] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 jpeg-encoder = { version = "0.7.1", features = ["simd"] }
 rayon = "1.12.0"
@@ -17,7 +22,10 @@ rfd = "0.17.2"
 
 # With eframe's default features off, Linux needs its windowing backends enabled explicitly.
 [target.'cfg(target_os = "linux")'.dependencies]
-eframe = { version = "0.36.2", default-features = false, features = ["wayland", "x11"] }
+eframe = { version = "0.36.2", default-features = false, features = [
+    "wayland",
+    "x11",
+] }
 
 [profile.release]
 lto = "thin"
@@ -29,10 +37,9 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 [build-dependencies]
 winresource = "0.1.31"
 
-# Installers: scripts/package-{windows.ps1,macos.sh,linux.sh} (see README).
 [package.metadata.packager]
 product-name = "blip"
-identifier = "app.blip"
+identifier = "sh.sascha.blip"
 category = "Photography"
 out-dir = "dist"
 icons = ["assets/icons/icon-*.png", "assets/icons/icon.ico"]
@@ -46,19 +53,3 @@ compression = "lzma"
 
 [package.metadata.packager.macos]
 minimum-system-version = "11.0"
-
-# The binary links only against glibc; winit and wgpu load the X11/Wayland, xkbcommon and
-# Vulkan/EGL libraries at runtime, so they are declared here instead.
-[package.metadata.packager.deb]
-section = "graphics"
-depends = [
-    "libc6",
-    "libwayland-client0",
-    "libxkbcommon0",
-    "libxkbcommon-x11-0",
-    "libx11-6",
-    "libxcursor1",
-    "libxrandr2",
-    "libxi6",
-    "libvulkan1 | libegl1",
-]
