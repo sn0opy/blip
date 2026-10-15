@@ -432,10 +432,14 @@ dependencies = [
 name = "blip"
 version = "0.2.1"
 dependencies = [
+ "block2 0.6.2",
  "bytemuck",
  "eframe",
  "image",
  "jpeg-encoder",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "rayon",
  "rfd",
  "winresource",

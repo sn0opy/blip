@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "macos")]
+mod macos;
 mod ui;
 
 use eframe::egui;
@@ -48,9 +50,15 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     let start = args.start;
+    #[cfg(target_os = "macos")]
+    macos::install_open_handler();
     eframe::run_native(
         "blip",
         options,
-        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, start)))),
+        Box::new(move |cc| {
+            #[cfg(target_os = "macos")]
+            macos::set_context(cc.egui_ctx.clone());
+            Ok(Box::new(ui::App::new(cc, start)))
+        }),
     )
 }

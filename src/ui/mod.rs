@@ -435,6 +435,8 @@ impl eframe::App for App {
                 .map(|f| f.path().to_path_buf())
                 .filter(|p| !p.as_os_str().is_empty())
         });
+        #[cfg(target_os = "macos")]
+        let dropped = dropped.or_else(crate::macos::take_opened);
         if let Some(path) = dropped {
             self.open(&path);
         }
