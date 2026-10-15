@@ -1,5 +1,5 @@
 {
-  description = "blip: fast, minimal FITS image blinker for astrophotography";
+  description = "blip: fast, minimal FITS / XISF image blinker for astrophotography";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -37,7 +37,7 @@
           '';
 
           meta = {
-            description = "Batch Lightframe Inspection & Preview: FITS image blinker";
+            description = "Batch Lightframe Inspection & Preview: FITS / XISF image blinker";
             license = pkgs.lib.licenses.mit;
             mainProgram = "blip";
             platforms = systems;

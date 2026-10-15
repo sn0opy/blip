@@ -1,7 +1,7 @@
 # blip
 
-**B**atch **L**ightframe **I**nspection & **P**review: a minimal, fast FITS blinker for
-astro images, hardware-accelerated on the GPU.
+**B**atch **L**ightframe **I**nspection & **P**review: a minimal, fast FITS and XISF
+blinker for astro images, hardware-accelerated on the GPU.
 
 ![blip on Windows](assets/screenshot-windows.jpg)
 
@@ -12,7 +12,9 @@ image, or the Linux Flatpak (x86_64 or aarch64) or `.tar.gz` from the
 [releases](../../releases). Install the Flatpak with
 `flatpak install --user blip-<version>-linux-<arch>.flatpak`.
 
-To build from source you need Rust 1.95 or newer (the MSVC toolchain on Windows).
+To build from source you need Rust 1.95 or newer (the MSVC toolchain on Windows) and a C
+compiler for the bundled LZ4 and Zstandard sources: the Xcode Command Line Tools on macOS, the
+Visual Studio Build Tools the MSVC toolchain already requires on Windows, gcc or clang on Linux.
 
 ```sh
 cargo build --release
@@ -37,7 +39,7 @@ cargo build --release
 | <kbd>B</kbd> | toggle binned preview / full resolution |
 | <kbd>C</kbd> | flash clipped pixels (red = saturated, blue = black) |
 | <kbd>F5</kbd> or <kbd>Ctrl</kbd>+<kbd>R</kbd> (<kbd>Cmd</kbd>+<kbd>R</kbd> on macOS) | rescan the folder |
-| <kbd>O</kbd> or <kbd>Ctrl</kbd>+<kbd>O</kbd> (<kbd>Cmd</kbd>+<kbd>O</kbd> on macOS) | open a folder (or drag a folder or FITS file onto the window) |
+| <kbd>O</kbd> or <kbd>Ctrl</kbd>+<kbd>O</kbd> (<kbd>Cmd</kbd>+<kbd>O</kbd> on macOS) | open a folder (or drag a folder or FITS / XISF file onto the window) |
 | <kbd>?</kbd> or <kbd>F1</kbd> | show all shortcuts |
 | <kbd>E</kbd> or <kbd>Ctrl</kbd>+<kbd>S</kbd> (<kbd>Cmd</kbd>+<kbd>S</kbd> on macOS) | export the stretched image (full resolution) as PNG or JPEG |
 

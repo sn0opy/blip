@@ -20,6 +20,7 @@ modules:
       - install -Dm644 LICENSE /app/share/licenses/sh.sascha.blip/LICENSE
       - install -Dm644 THIRD_PARTY_LICENSES.txt /app/share/licenses/sh.sascha.blip/THIRD_PARTY_LICENSES.txt
       - install -Dm644 sh.sascha.blip.desktop /app/share/applications/sh.sascha.blip.desktop
+      - install -Dm644 sh.sascha.blip.mime.xml /app/share/mime/packages/sh.sascha.blip.xml
       - install -Dm644 sh.sascha.blip.metainfo.xml /app/share/metainfo/sh.sascha.blip.metainfo.xml
       - for s in 16 32 48 64 128 256 512; do install -Dm644 icon-$s.png /app/share/icons/hicolor/${s}x${s}/apps/sh.sascha.blip.png; done
     sources:
@@ -31,6 +32,8 @@ modules:
         path: ../../target/THIRD_PARTY_LICENSES.txt
       - type: file
         path: sh.sascha.blip.desktop
+      - type: file
+        path: sh.sascha.blip.mime.xml
       - type: file
         path: sh.sascha.blip.metainfo.xml
       - type: file

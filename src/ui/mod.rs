@@ -27,7 +27,7 @@ const MAX_SIDE: usize = 3200;
 /// Number of rendered images kept on the GPU (binned / full resolution).
 const CACHE_SIZE: usize = 10;
 const CACHE_SIZE_FULL: usize = 4;
-const EXTENSIONS: [&str; 3] = ["fit", "fits", "fts"];
+const EXTENSIONS: [&str; 4] = ["fit", "fits", "fts", "xisf"];
 const STATUS_FADE: f32 = 0.8;
 
 /// A message in the bottom-left corner. Transient ones fade out after `ttl` seconds.

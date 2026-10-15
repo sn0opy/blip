@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
 Name=blip
-Comment=Fast FITS image blinker for astrophotography
+Comment=Fast FITS / XISF image blinker for astrophotography
 Exec=blip %f
 Icon=sh.sascha.blip
 Terminal=false
 Categories=Graphics;Photography;
-MimeType=image/fits;
+MimeType=image/fits;image/x-xisf;

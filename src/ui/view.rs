@@ -154,7 +154,7 @@ impl App {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "Open a folder (O) or drop a folder / FITS file here",
+                "Open a folder (O) or drop a folder / FITS / XISF file here",
                 egui::FontId::proportional(18.0),
                 Color32::GRAY,
             );

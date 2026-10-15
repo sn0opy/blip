@@ -1,6 +1,6 @@
 //! Export the stretched image at full resolution as PNG or JPEG.
 
-use crate::{fits, process};
+use crate::process;
 use image::ImageEncoder;
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
@@ -14,7 +14,7 @@ const JPEG_QUALITY: u8 = 92;
 /// Re-read `src`, render it at full resolution with `params` and write it to `dst`.
 /// The format follows the extension (`.jpg`/`.jpeg`, otherwise PNG).
 pub fn export(src: &Path, dst: &Path, params: process::StretchParams) -> Result<PathBuf, String> {
-    let img = fits::read_file(src)?;
+    let img = crate::image::read_file(src)?;
     let r = process::render_full::<[u8; 3]>(&img, params);
     write_image(dst, r.pixels.as_flattened(), r.width, r.height)
 }

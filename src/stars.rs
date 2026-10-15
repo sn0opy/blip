@@ -4,7 +4,7 @@
 //! checkerboard, less noise) and measured on the full-resolution data, so HFR is
 //! reported in sensor pixels.
 
-use crate::fits::FitsImage;
+use crate::image::Image;
 use crate::process::{ClipStats, MAD_TO_SIGMA};
 use rayon::prelude::*;
 
@@ -33,7 +33,7 @@ const APERTURE: f32 = 4.0;
 const MIN_RADIUS: f32 = 8.0;
 const MAX_RADIUS: f32 = 30.0;
 
-pub fn detect(img: &FitsImage, clip: &ClipStats) -> StarStats {
+pub fn detect(img: &Image, clip: &ClipStats) -> StarStats {
     const MARGIN: usize = 16;
     let (bw, bh) = (img.width / 2, img.height / 2);
     // No room for a peak away from the border (this also covers empty images).
@@ -144,12 +144,12 @@ pub fn detect(img: &FitsImage, clip: &ClipStats) -> StarStats {
 /// Full-resolution luminance view: Bayer channels are scaled to a common background
 /// level (white balance), RGB planes averaged, mono used as is.
 struct Luminance<'a> {
-    img: &'a FitsImage,
+    img: &'a Image,
     gains: [f32; 3],
 }
 
 impl<'a> Luminance<'a> {
-    fn new(img: &'a FitsImage) -> Self {
+    fn new(img: &'a Image) -> Self {
         let mut gains = [1.0; 3];
         if let Some(bayer) = img.bayer {
             // Per-channel medians of a sparse grid, via exact 16-bit histograms.
@@ -282,7 +282,7 @@ fn smoothed_binned(lum: &Luminance, bw: usize, bh: usize) -> Vec<f32> {
 /// Measure one star around (cx, cy): reject saturated ones, refine the centroid,
 /// subtract the local background (annulus median) and compute the HFR.
 fn measure(
-    img: &FitsImage,
+    img: &Image,
     lum: &Luminance,
     clip: &ClipStats,
     cx: f32,

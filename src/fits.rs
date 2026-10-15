@@ -1,11 +1,9 @@
 //! Minimal FITS reader: 2D (mono / Bayer) or 3D (RGB planes) images from the primary
 //! HDU or, if that is empty, the first IMAGE extension.
-//! All sample types are normalized to u16 so the rest of the pipeline can work
-//! with exact 16-bit histograms and lookup tables.
 
+use crate::image::{Bayer, Image, lookup, parse_float, parse_int, read_data};
 use rayon::prelude::*;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 const BLOCK: usize = 2880;
@@ -15,91 +13,15 @@ const TRUNCATED_HEADER: &str = "unexpected end of file in header";
 /// (keyword, value) cards.
 type Header = Vec<(String, String)>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Bayer {
-    Rggb,
-    Bggr,
-    Grbg,
-    Gbrg,
-}
-
-impl Bayer {
-    fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_uppercase().as_str() {
-            "RGGB" => Some(Self::Rggb),
-            "BGGR" => Some(Self::Bggr),
-            "GRBG" => Some(Self::Grbg),
-            "GBRG" => Some(Self::Gbrg),
-            _ => None,
-        }
-    }
-
-    /// Channel index (0 = R, 1 = G, 2 = B) of the pixel at (x, y).
-    pub fn channel(self, x: usize, y: usize) -> usize {
-        let pattern = match self {
-            Self::Rggb => [0, 1, 1, 2],
-            Self::Bggr => [2, 1, 1, 0],
-            Self::Grbg => [1, 0, 2, 1],
-            Self::Gbrg => [1, 2, 0, 1],
-        };
-        pattern[(y & 1) * 2 + (x & 1)]
-    }
-
-    fn offset(self, dx: usize, dy: usize) -> Self {
-        let mut b = self;
-        if dx & 1 == 1 {
-            b = match b {
-                Self::Rggb => Self::Grbg,
-                Self::Grbg => Self::Rggb,
-                Self::Bggr => Self::Gbrg,
-                Self::Gbrg => Self::Bggr,
-            };
-        }
-        if dy & 1 == 1 {
-            b = match b {
-                Self::Rggb => Self::Gbrg,
-                Self::Gbrg => Self::Rggb,
-                Self::Bggr => Self::Grbg,
-                Self::Grbg => Self::Bggr,
-            };
-        }
-        b
-    }
-}
-
-pub struct FitsImage {
-    pub width: usize,
-    pub height: usize,
-    /// 1 (mono / Bayer) or 3 (RGB planes).
-    pub planes: usize,
-    /// Plane-major, row-major samples.
-    pub data: Vec<u16>,
-    pub bayer: Option<Bayer>,
-    /// (keyword, value) with quotes and comments stripped. For extension images the
-    /// extension's cards come first, followed by the inherited primary header.
-    pub header: Vec<(String, String)>,
-}
-
-impl FitsImage {
-    pub fn get(&self, key: &str) -> Option<&str> {
-        lookup(&self.header, key)
-    }
-
-    pub fn get_f64(&self, key: &str) -> Option<f64> {
-        self.get(key).and_then(parse_float)
-    }
-}
-
-pub fn read_file(path: &Path) -> Result<FitsImage, String> {
-    let err = |e: std::io::Error| e.to_string();
-    let slow = || parse(&std::fs::read(path).map_err(err)?);
-    let mut file = File::open(path).map_err(err)?;
-    let len = usize::try_from(file.metadata().map_err(err)?.len()).map_err(|_| "file too large")?;
-
-    // The header is usually 1-3 blocks; one generous read keeps it to a single round
-    // trip on network drives. Longer headers and extension images take the slow path.
-    let mut head = vec![0u8; len.min(64 * BLOCK)];
-    file.read_exact(&mut head).map_err(err)?;
+/// Decode a FITS file of `len` bytes whose first bytes `head` were already read.
+pub(crate) fn read(
+    path: &Path,
+    mut file: File,
+    head: Vec<u8>,
+    len: usize,
+) -> Result<Image, String> {
+    // Longer headers and extension images take the slow path.
+    let slow = || parse(&std::fs::read(path).map_err(|e| e.to_string())?);
     let (header, data_start) = match parse_header(&head) {
         Ok(h) => h,
         Err(e) if e == TRUNCATED_HEADER && head.len() < len => return slow(),
@@ -129,7 +51,7 @@ pub fn read_file(path: &Path) -> Result<FitsImage, String> {
     Ok(layout.into_image(data, header))
 }
 
-pub fn parse(bytes: &[u8]) -> Result<FitsImage, String> {
+pub fn parse(bytes: &[u8]) -> Result<Image, String> {
     let (mut header, mut data_start) = parse_header(bytes)?;
     let layout = if header_int(&header, "NAXIS")? == Some(0) {
         let (ext, layout, start) = find_image_extension(bytes, data_start)?;
@@ -143,20 +65,6 @@ pub fn parse(bytes: &[u8]) -> Result<FitsImage, String> {
     layout.check_size(data_start, bytes.len())?;
     let data = decode(&bytes[data_start..data_start + layout.data_len], &layout)?;
     Ok(layout.into_image(data, header))
-}
-
-/// Fill `dst` with the data unit starting at `start`, reusing what `head` already holds.
-fn read_data(file: &mut File, head: &[u8], start: usize, dst: &mut [u8]) -> Result<(), String> {
-    let cached = head.get(start..).unwrap_or_default();
-    let have = cached.len().min(dst.len());
-    dst[..have].copy_from_slice(&cached[..have]);
-    if have < dst.len() {
-        file.seek(SeekFrom::Start((start + have) as u64))
-            .map_err(|e| e.to_string())?;
-        file.read_exact(&mut dst[have..])
-            .map_err(|e| format!("file truncated: {e}"))?;
-    }
-    Ok(())
 }
 
 /// Walk the extension HDUs after the primary one for the first IMAGE with data.
@@ -241,7 +149,7 @@ fn parse_cards(bytes: &[u8]) -> Result<(Header, usize), String> {
 
 /// Value field of a card with quotes and comment removed. Works on bytes so stray
 /// non-ASCII (often Latin-1) characters in comments don't break parsing.
-fn parse_value(raw: &[u8]) -> String {
+pub(crate) fn parse_value(raw: &[u8]) -> String {
     let raw = raw.trim_ascii();
     if let Some(rest) = raw.strip_prefix(b"'") {
         // Quoted string; '' is an escaped quote.
@@ -275,32 +183,6 @@ fn text(bytes: &[u8]) -> String {
         Ok(s) => s.to_string(),
         Err(_) => bytes.iter().map(|&b| b as char).collect(),
     }
-}
-
-fn lookup<'a>(header: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    header
-        .iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, v)| v.as_str())
-}
-
-/// Accepts Fortran-style `D` exponents.
-fn parse_float(v: &str) -> Option<f64> {
-    let v = v.trim();
-    let x = if v.contains(['D', 'd']) {
-        v.replace(['D', 'd'], "E").parse::<f64>().ok()?
-    } else {
-        v.parse::<f64>().ok()?
-    };
-    x.is_finite().then_some(x)
-}
-
-/// Integers may also be written in float notation ("16.", "1.6D1").
-fn parse_int(v: &str) -> Option<i64> {
-    v.trim().parse::<i64>().ok().or_else(|| {
-        let x = parse_float(v)?;
-        (x.fract() == 0.0 && x.abs() < 9.2e18).then_some(x as i64)
-    })
 }
 
 /// `Ok(None)` if the key is absent, `Err` if present but not an integer.
@@ -367,18 +249,7 @@ impl Layout {
             .checked_mul((bitpix.unsigned_abs() / 8) as usize)
             .ok_or("image dimensions too large")?;
 
-        let bayer = (planes == 1)
-            .then(|| {
-                lookup(header, "BAYERPAT")
-                    .or(lookup(header, "COLORTYP"))
-                    .and_then(Bayer::parse)
-            })
-            .flatten()
-            .map(|b| {
-                // Only the parity matters; ignore malformed offsets.
-                let off = |k: &str| (int(k).ok().flatten().unwrap_or(0) & 1) as usize;
-                b.offset(off("XBAYROFF"), off("YBAYROFF"))
-            });
+        let bayer = (planes == 1).then(|| Bayer::from_header(header)).flatten();
         Ok(Self {
             width,
             height,
@@ -405,8 +276,8 @@ impl Layout {
         }
     }
 
-    fn into_image(self, data: Vec<u16>, header: Vec<(String, String)>) -> FitsImage {
-        FitsImage {
+    fn into_image(self, data: Vec<u16>, header: Vec<(String, String)>) -> Image {
+        Image {
             width: self.width,
             height: self.height,
             planes: self.planes,
@@ -847,7 +718,7 @@ mod tests {
         let check = |name: &str, bytes: &[u8]| {
             let path = dir.join(format!("blip-test-{}-{name}.fit", std::process::id()));
             std::fs::write(&path, bytes).unwrap();
-            let r = read_file(&path);
+            let r = crate::image::read_file(&path);
             std::fs::remove_file(&path).unwrap();
             let mem = parse(bytes);
             assert_eq!(r.as_ref().err(), mem.as_ref().err());

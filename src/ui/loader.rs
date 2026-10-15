@@ -15,7 +15,7 @@
 use super::panic_message;
 use super::texture::{self, Filter, Texture, Uploader};
 use blip::stars::StarStats;
-use blip::{fits, process, stars};
+use blip::{image, process, stars};
 use eframe::egui::{self, Pos2, Rect};
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -53,7 +53,7 @@ pub struct Loaded {
     pub info: String,
     pub clip: process::ClipStats,
     pub stretch: process::StretchInfo,
-    pub bayer: Option<fits::Bayer>,
+    pub bayer: Option<image::Bayer>,
 }
 
 impl Loaded {
@@ -82,7 +82,7 @@ struct Job {
 
 struct Raw {
     path: PathBuf,
-    img: fits::FitsImage,
+    img: image::Image,
     clip: process::ClipStats,
 }
 
@@ -284,7 +284,7 @@ impl Worker {
             let (img, clip) = match raw {
                 Some(raw) => (raw.img, raw.clip),
                 None => {
-                    let Ok(img) = fits::read_file(&path) else {
+                    let Ok(img) = image::read_file(&path) else {
                         return Some((StarStats::default(), 0.0));
                     };
                     let clip = process::clip_stats(&img);
@@ -319,7 +319,7 @@ fn load(
 ) -> Option<Result<(Loaded, Raw), String>> {
     let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
     let t = Instant::now();
-    let img = match fits::read_file(path) {
+    let img = match image::read_file(path) {
         Ok(img) => img,
         Err(e) => return Some(Err(e)),
     };
@@ -399,7 +399,7 @@ fn load(
 }
 
 /// One-line summary of the capture from the header.
-fn describe(img: &fits::FitsImage) -> String {
+fn describe(img: &image::Image) -> String {
     let mut parts = Vec::new();
     if let Some(v) = img.get("OBJECT") {
         parts.push(v.to_string());

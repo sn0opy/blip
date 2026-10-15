@@ -4,7 +4,7 @@
 //! (no interpolation, no color artifacts) and larger even bin factors average more
 //! cells. Full resolution uses bilinear interpolation.
 
-use crate::fits::{Bayer, FitsImage};
+use crate::image::{Bayer, Image};
 use rayon::prelude::*;
 
 /// Converts a median absolute deviation into the standard deviation of a normal
@@ -100,7 +100,7 @@ pub fn mtf(m: f64, x: f64) -> f64 {
 }
 
 /// Binned preview with a long side of at most `max_side`.
-pub fn render<P: Pixel>(img: &FitsImage, max_side: usize, params: StretchParams) -> Rendered<P> {
+pub fn render<P: Pixel>(img: &Image, max_side: usize, params: StretchParams) -> Rendered<P> {
     let (planes, width, height, bin) = bin_image(img, max_side);
     let planes: Vec<&[u16]> = planes.iter().map(Vec::as_slice).collect();
     let (pixels, stretch) = stretch(&planes, params);
@@ -113,7 +113,7 @@ pub fn render<P: Pixel>(img: &FitsImage, max_side: usize, params: StretchParams)
     }
 }
 
-pub fn render_full<P: Pixel>(img: &FitsImage, params: StretchParams) -> Rendered<P> {
+pub fn render_full<P: Pixel>(img: &Image, params: StretchParams) -> Rendered<P> {
     let (pixels, stretch) = match img.bayer {
         Some(bayer) => debayer_stretch(img, bayer, params),
         None => {
@@ -161,7 +161,7 @@ fn stretch<P: Pixel>(planes: &[&[u16]], params: StretchParams) -> (Vec<P>, Stret
 /// into small per-thread buffers and mapped through the LUTs straight into the output,
 /// so the three full-size color planes never exist.
 fn debayer_stretch<P: Pixel>(
-    img: &FitsImage,
+    img: &Image,
     bayer: Bayer,
     params: StretchParams,
 ) -> (Vec<P>, StretchInfo) {
@@ -273,7 +273,7 @@ fn stretch_luts(stats: &[(f64, f64)], params: StretchParams) -> (Vec<Vec<u8>>, S
 /// The bin factor never exceeds the short side, so very elongated images keep at
 /// least one pixel per axis (and may exceed `max_side`). Bayer images smaller than one
 /// 2x2 cell are interpolated at full resolution instead.
-pub fn bin_image(img: &FitsImage, max_side: usize) -> (Vec<Vec<u16>>, usize, usize, usize) {
+pub fn bin_image(img: &Image, max_side: usize) -> (Vec<Vec<u16>>, usize, usize, usize) {
     let (sw, sh) = (img.width, img.height);
     let long = sw.max(sh);
     let max_side = max_side.max(1);
@@ -372,7 +372,7 @@ pub fn bin_image(img: &FitsImage, max_side: usize) -> (Vec<Vec<u16>>, usize, usi
 }
 
 /// Bilinear demosaic of a whole (small) image into three planes.
-fn debayer_planes(img: &FitsImage, bayer: Bayer) -> Vec<Vec<u16>> {
+fn debayer_planes(img: &Image, bayer: Bayer) -> Vec<Vec<u16>> {
     let w = img.width;
     let mut planes: Vec<Vec<u16>> = (0..3).map(|_| vec![0u16; w * img.height]).collect();
     let [r, g, b] = &mut planes[..] else {
@@ -392,7 +392,7 @@ fn debayer_planes(img: &FitsImage, bayer: Bayer) -> Vec<Vec<u16>> {
 
 /// Bilinear demosaic of row `y` at full resolution: every missing color is the mean
 /// of the same-color pixels in the 3x3 neighborhood.
-fn debayer_row(img: &FitsImage, bayer: Bayer, y: usize, [rr, gr, br]: [&mut [u16]; 3]) {
+fn debayer_row(img: &Image, bayer: Bayer, y: usize, [rr, gr, br]: [&mut [u16]; 3]) {
     #[derive(Clone, Copy, PartialEq)]
     enum Site {
         Red,
@@ -495,7 +495,7 @@ pub struct ClipStats {
 ///
 /// The saturation level is derived from the data's bit depth: e.g. a 12-bit camera
 /// scaled to 16 bit never sets the lowest 4 bits, so it saturates at 65520.
-pub fn clip_stats(img: &FitsImage) -> ClipStats {
+pub fn clip_stats(img: &Image) -> ClipStats {
     let unused_bits = img
         .data
         .par_iter()
@@ -527,7 +527,7 @@ pub const CLIP_BRIGHT: u8 = 2;
 /// Clipped pixels in a `w`x`h` image rendered with bin factor `bin`, as
 /// `(x, y, kind)`; bright wins within a block. Capped at `limit` entries.
 pub fn clip_points(
-    img: &FitsImage,
+    img: &Image,
     stats: &ClipStats,
     bin: usize,
     w: usize,
@@ -647,10 +647,11 @@ fn stf_lut(shadows: f64, midtones: f64, gain: f64) -> Vec<u8> {
 /// Synthetic images for unit tests.
 #[cfg(test)]
 pub(crate) mod testutil {
-    use crate::fits::{self, FitsImage};
+    use crate::fits;
+    use crate::image::Image;
 
     /// Parse a 16-bit unsigned FITS image (row-major `data`) built in memory.
-    pub fn image(w: usize, h: usize, bayer: Option<&str>, data: &[u16]) -> FitsImage {
+    pub fn image(w: usize, h: usize, bayer: Option<&str>, data: &[u16]) -> Image {
         assert_eq!(data.len(), w * h);
         let mut cards = vec![
             format!("SIMPLE  = {:>20}", "T"),
@@ -722,7 +723,7 @@ mod tests {
     /// Bayer image whose samples encode their channel: R 1000, B 5000, and the
     /// greens 2000 (even rows) / 4000 (odd rows), so a correct superpixel is
     /// (1000, 3000, 5000).
-    fn channel_coded(w: usize, h: usize, pattern: &str) -> FitsImage {
+    fn channel_coded(w: usize, h: usize, pattern: &str) -> Image {
         let p = pattern.as_bytes();
         let data: Vec<u16> = (0..w * h)
             .map(|i| {
@@ -814,7 +815,7 @@ mod tests {
 
     /// The pre-fusion full-resolution path: three interpolated planes, then the
     /// stretch with exact statistics.
-    fn render_full_reference(img: &FitsImage, params: StretchParams) -> (Vec<[u8; 3]>, Vec<f64>) {
+    fn render_full_reference(img: &Image, params: StretchParams) -> (Vec<[u8; 3]>, Vec<f64>) {
         let bayer = img.bayer.unwrap();
         let (w, h) = (img.width, img.height);
         let mut planes = vec![Vec::new(); 3];
