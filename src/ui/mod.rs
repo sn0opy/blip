@@ -277,7 +277,9 @@ impl App {
         };
         let images = missing(&|p| self.cache.contains_key(p));
         let stars = missing(&|p| self.stars.contains_key(p));
-        self.loader.set_queue(images, stars, self.settings());
+        let waiting = self.current().is_some_and(|c| images.first() == Some(c));
+        self.loader
+            .set_queue(images, stars, self.settings(), waiting);
     }
 
     fn settings(&self) -> Settings {

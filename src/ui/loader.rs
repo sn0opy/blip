@@ -97,6 +97,7 @@ struct Queue {
     wanted_images: Vec<Job>,
     images: VecDeque<Job>,
     running_images: Vec<Job>,
+    waiting_for: Option<Job>,
     wanted_stars: Vec<PathBuf>,
     stars: VecDeque<PathBuf>,
     running_stars: Vec<PathBuf>,
@@ -152,12 +153,19 @@ impl Shared {
         self.queue.lock().unwrap()
     }
 
-    fn set_queue(&self, images: Vec<PathBuf>, stars: Vec<PathBuf>, settings: Settings) {
+    fn set_queue(
+        &self,
+        images: Vec<PathBuf>,
+        stars: Vec<PathBuf>,
+        settings: Settings,
+        waiting: bool,
+    ) {
         let mut q = self.lock();
         q.generation += 1;
         q.wanted_images = (images.into_iter())
             .map(|path| Job { path, settings })
             .collect();
+        q.waiting_for = q.wanted_images.first().filter(|_| waiting).cloned();
         q.images = (q.wanted_images.iter())
             .filter(|j| !q.running_images.contains(j))
             .cloned()
@@ -208,9 +216,16 @@ impl Loader {
     }
 
     /// Replace all pending work: `images` to load and `stars` to measure, each in
-    /// priority order. Running jobs that are still wanted continue.
-    pub fn set_queue(&self, images: Vec<PathBuf>, stars: Vec<PathBuf>, settings: Settings) {
-        self.shared.set_queue(images, stars, settings);
+    /// priority order. Running jobs that are still wanted continue. `waiting`: the first
+    /// image is the one on screen; nothing else starts while it loads.
+    pub fn set_queue(
+        &self,
+        images: Vec<PathBuf>,
+        stars: Vec<PathBuf>,
+        settings: Settings,
+        waiting: bool,
+    ) {
+        self.shared.set_queue(images, stars, settings, waiting);
     }
 
     pub fn preloader(&self) -> Preloader {
@@ -229,7 +244,7 @@ impl Preloader {
     /// Does nothing once anything was queued.
     pub fn preload(&self, path: PathBuf, settings: Settings) {
         if self.0.lock().generation == 0 {
-            self.0.set_queue(vec![path], Vec::new(), settings);
+            self.0.set_queue(vec![path], Vec::new(), settings, true);
         }
     }
 }
@@ -245,6 +260,12 @@ impl Worker {
             let (task, generation) = {
                 let mut q = self.shared.lock();
                 loop {
+                    let busy =
+                        (q.waiting_for.as_ref()).is_some_and(|j| q.running_images.contains(j));
+                    if busy {
+                        q = self.shared.wake.wait(q).unwrap();
+                        continue;
+                    }
                     if let Some(job) = q.images.pop_front() {
                         q.running_images.push(job.clone());
                         break (Task::Image(job), q.generation);
