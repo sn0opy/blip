@@ -32,12 +32,13 @@ cargo build --release
 | Mouse wheel / drag / double-click | zoom / pan / reset (zoom is kept while blinking) |
 | <kbd>F</kbd> or <kbd>0</kbd> | reset zoom |
 | <kbd>I</kbd> | toggle the info overlay (capture details, star size, clipping stats) |
-| <kbd>T</kbd> | file list: show the end of long file names instead of the start |
+| <kbd>T</kbd> | toggle start / end of long file names in the file list |
 | <kbd>D</kbd> | toggle the debug panel (timings, stretch values, cache, GPU) |
 | <kbd>N</kbd> | toggle background neutralization (auto white balance) |
-| <kbd>S</kbd> | show the measured star sizes (HFR) on the current image |
+| <kbd>S</kbd> | toggle the measured star sizes (HFR) on the current image |
 | <kbd>B</kbd> | toggle binned preview / full resolution |
-| <kbd>C</kbd> | flash clipped pixels (red = saturated, blue = black) |
+| <kbd>A</kbd> | toggle auto stretch for the current image (off shows the data linearly) |
+| <kbd>C</kbd> | toggle flashing clipped pixels on the current image (red = saturated, blue = black) |
 | <kbd>F5</kbd> or <kbd>Ctrl</kbd>+<kbd>R</kbd> (<kbd>Cmd</kbd>+<kbd>R</kbd> on macOS) | rescan the folder |
 | <kbd>O</kbd> or <kbd>Ctrl</kbd>+<kbd>O</kbd> (<kbd>Cmd</kbd>+<kbd>O</kbd> on macOS) | open a folder (or drag a folder or FITS / XISF file onto the window) |
 | <kbd>?</kbd> or <kbd>F1</kbd> | show all shortcuts |

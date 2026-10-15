@@ -23,6 +23,8 @@ pub struct StretchParams {
     /// Scale each channel so the background medians match (neutral gray sky).
     /// When false, the raw sensor color balance is kept.
     pub neutralize: bool,
+    /// When false, samples are shown linearly (after the white balance).
+    pub auto_stretch: bool,
 }
 
 impl Default for StretchParams {
@@ -31,6 +33,7 @@ impl Default for StretchParams {
             shadows_clip: -2.8,
             target_bg: 0.15,
             neutralize: true,
+            auto_stretch: true,
         }
     }
 }
@@ -244,16 +247,20 @@ fn stretch_luts(stats: &[(f64, f64)], params: StretchParams) -> (Vec<Vec<u8>>, S
             }
         })
         .collect();
-    let n = stats.len() as f64;
-    let median = stats.iter().zip(&gains).map(|(s, g)| s.0 * g).sum::<f64>() / n;
-    let mad = stats.iter().zip(&gains).map(|(s, g)| s.1 * g).sum::<f64>() / n;
-    let mad_n = mad * MAD_TO_SIGMA;
-    let shadows = if mad_n > 0.0 {
-        (median + params.shadows_clip * mad_n).clamp(0.0, 1.0)
+    let (shadows, midtones) = if params.auto_stretch {
+        let n = stats.len() as f64;
+        let median = stats.iter().zip(&gains).map(|(s, g)| s.0 * g).sum::<f64>() / n;
+        let mad = stats.iter().zip(&gains).map(|(s, g)| s.1 * g).sum::<f64>() / n;
+        let mad_n = mad * MAD_TO_SIGMA;
+        let shadows = if mad_n > 0.0 {
+            (median + params.shadows_clip * mad_n).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (shadows, mtf(params.target_bg, median - shadows))
     } else {
-        0.0
+        (0.0, 0.5)
     };
-    let midtones = mtf(params.target_bg, median - shadows);
     let luts: Vec<Vec<u8>> = gains
         .par_iter()
         .map(|&g| stf_lut(shadows, midtones, g))
@@ -718,6 +725,20 @@ mod tests {
             (3.0 / 65535.0, 1.0 / 65535.0)
         );
         assert_eq!(median_mad(&[0, 65535, 65535]), (1.0, 0.0));
+    }
+
+    #[test]
+    fn without_auto_stretch_samples_map_linearly() {
+        let params = StretchParams {
+            auto_stretch: false,
+            neutralize: false,
+            ..Default::default()
+        };
+        let r = render_full::<[u8; 3]>(&image(3, 1, None, &[0, 32768, 65535]), params);
+        assert_eq!(r.pixels, [[0; 3], [128; 3], [255; 3]]);
+        // Bayer data is still debayered.
+        let r = render::<[u8; 3]>(&channel_coded(12, 12, "RGGB"), 6, params);
+        assert!(r.pixels.iter().all(|&p| p == [4, 12, 19]));
     }
 
     /// Bayer image whose samples encode their channel: R 1000, B 5000, and the

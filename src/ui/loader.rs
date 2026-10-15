@@ -153,17 +153,11 @@ impl Shared {
         self.queue.lock().unwrap()
     }
 
-    fn set_queue(
-        &self,
-        images: Vec<PathBuf>,
-        stars: Vec<PathBuf>,
-        settings: Settings,
-        waiting: bool,
-    ) {
+    fn set_queue(&self, images: Vec<(PathBuf, Settings)>, stars: Vec<PathBuf>, waiting: bool) {
         let mut q = self.lock();
         q.generation += 1;
         q.wanted_images = (images.into_iter())
-            .map(|path| Job { path, settings })
+            .map(|(path, settings)| Job { path, settings })
             .collect();
         q.waiting_for = q.wanted_images.first().filter(|_| waiting).cloned();
         q.images = (q.wanted_images.iter())
@@ -218,14 +212,8 @@ impl Loader {
     /// Replace all pending work: `images` to load and `stars` to measure, each in
     /// priority order. Running jobs that are still wanted continue. `waiting`: the first
     /// image is the one on screen; nothing else starts while it loads.
-    pub fn set_queue(
-        &self,
-        images: Vec<PathBuf>,
-        stars: Vec<PathBuf>,
-        settings: Settings,
-        waiting: bool,
-    ) {
-        self.shared.set_queue(images, stars, settings, waiting);
+    pub fn set_queue(&self, images: Vec<(PathBuf, Settings)>, stars: Vec<PathBuf>, waiting: bool) {
+        self.shared.set_queue(images, stars, waiting);
     }
 
     pub fn preloader(&self) -> Preloader {
@@ -244,7 +232,7 @@ impl Preloader {
     /// Does nothing once anything was queued.
     pub fn preload(&self, path: PathBuf, settings: Settings) {
         if self.0.lock().generation == 0 {
-            self.0.set_queue(vec![path], Vec::new(), settings, true);
+            self.0.set_queue(vec![(path, settings)], Vec::new(), true);
         }
     }
 }

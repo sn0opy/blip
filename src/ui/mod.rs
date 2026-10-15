@@ -78,6 +78,8 @@ pub struct App {
     /// Per-image overlays: switching images turns them off.
     flash_clip: Option<PathBuf>,
     star_view: Option<PathBuf>,
+    /// Shown without the auto stretch.
+    unstretched: Option<PathBuf>,
     /// Star measurements, computed by the loader for every image.
     stars: HashMap<PathBuf, MeasuredStars>,
 
@@ -170,6 +172,7 @@ impl App {
             pan: Vec2::ZERO,
             flash_clip: None,
             star_view: None,
+            unstretched: None,
             stars: HashMap::new(),
             confirm_delete: None,
             show_help: false,
@@ -278,15 +281,45 @@ impl App {
         let images = missing(&|p| self.cache.contains_key(p));
         let stars = missing(&|p| self.stars.contains_key(p));
         let waiting = self.current().is_some_and(|c| images.first() == Some(c));
-        self.loader
-            .set_queue(images, stars, self.settings(), waiting);
+        let images = (images.into_iter())
+            .map(|p| {
+                let settings = self.settings(&p);
+                (p, settings)
+            })
+            .collect();
+        self.loader.set_queue(images, stars, waiting);
     }
 
-    fn settings(&self) -> Settings {
+    fn settings(&self, path: &Path) -> Settings {
         Settings {
-            stretch: self.params,
+            stretch: StretchParams {
+                auto_stretch: self.unstretched.as_deref() != Some(path),
+                ..self.params
+            },
             max_side: (!self.full_res).then_some(MAX_SIDE),
         }
+    }
+
+    fn toggle_stretch(&mut self) {
+        let Some(cur) = self.current().cloned() else {
+            return;
+        };
+        let previous = if self.unstretched.as_ref() == Some(&cur) {
+            self.unstretched.take()
+        } else {
+            self.unstretched.replace(cur.clone())
+        };
+        if let Some(previous) = previous.filter(|p| *p != cur) {
+            self.cache.remove(&previous);
+        }
+        self.stale = self.cache.remove_entry(&cur).or(self.stale.take());
+        let state = if self.unstretched.is_some() {
+            "off"
+        } else {
+            "on"
+        };
+        self.set_status(format!("Auto stretch {state} (A to toggle)"), Some(2.0));
+        self.request_loads();
     }
 
     fn reload_all(&mut self) {
@@ -307,7 +340,7 @@ impl App {
             match msg {
                 // Ignore stale settings and files that are no longer listed.
                 Message::Image(path, settings, result)
-                    if settings == self.settings() && self.files.contains(&path) =>
+                    if settings == self.settings(&path) && self.files.contains(&path) =>
                 {
                     loaded_any = true;
                     match result {
@@ -422,7 +455,8 @@ impl App {
         let Some(dst) = dialog.save_file() else {
             return;
         };
-        let (tx, ctx, params) = (self.export_tx.clone(), ctx.clone(), self.params);
+        let params = self.settings(&src).stretch;
+        let (tx, ctx) = (self.export_tx.clone(), ctx.clone());
         self.set_status(format!("Exporting {}…", file_name(&dst)), None);
         std::thread::spawn(move || {
             let result = catch_unwind(AssertUnwindSafe(|| {

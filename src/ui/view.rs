@@ -97,6 +97,7 @@ impl App {
         let debug_pos = rect.right_top() + Vec2::new(-44.0, 8.0);
         let mut debug_drawn = false;
 
+        let params = (self.shown.as_ref()).map_or(self.params, |p| self.settings(p).stretch);
         let shown = self.shown.as_ref().and_then(|p| {
             let stale = self
                 .stale
@@ -142,11 +143,11 @@ impl App {
             }
 
             if self.show_info {
-                let text = info_text(path, entry, stars.map(|s| &s.stats));
+                let text = info_text(path, entry, stars.map(|s| &s.stats), params);
                 draw::text_box(&painter, rect.left_top() + Vec2::new(10.0, 8.0), &text, 1.0);
             }
             if let Some(general) = &debug_general {
-                let text = format!("{}\n{general}", debug_image(entry, stars, self.params));
+                let text = format!("{}\n{general}", debug_image(entry, stars, params));
                 draw::text_box_aligned(&painter, debug_pos, egui::Align2::RIGHT_TOP, &text, 1.0);
                 debug_drawn = true;
             }
@@ -321,23 +322,38 @@ fn debug_image(entry: &CacheEntry, stars: Option<&MeasuredStars>, params: Stretc
             per_channel(&s.medians, &|v| format!("{:.0}", v * 65535.0)),
             per_channel(&s.gains, &|v| format!("{v:.2}"))
         ),
-        format!(
-            "stretch shadows {:.4} · midtones {:.4} · target {} · neutralize {}",
-            s.shadows,
-            s.midtones,
-            params.target_bg,
-            if params.neutralize { "on" } else { "off" }
-        ),
+        if params.auto_stretch {
+            format!(
+                "stretch shadows {:.4} · midtones {:.4} · target {} · neutralize {}",
+                s.shadows,
+                s.midtones,
+                params.target_bg,
+                if params.neutralize { "on" } else { "off" }
+            )
+        } else {
+            format!(
+                "stretch off · neutralize {}",
+                if params.neutralize { "on" } else { "off" }
+            )
+        },
         format!("saturation level {} ADU", l.clip.bright_level),
     ]
     .join("\n")
 }
 
-fn info_text(path: &Path, entry: &CacheEntry, stars: Option<&StarStats>) -> String {
+fn info_text(
+    path: &Path,
+    entry: &CacheEntry,
+    stars: Option<&StarStats>,
+    params: StretchParams,
+) -> String {
     let l = &entry.loaded;
     let mut lines = vec![file_name(path)];
     if !l.info.is_empty() {
         lines.push(l.info.clone());
+    }
+    if !params.auto_stretch {
+        lines.push("auto stretch off".into());
     }
     let c = &l.clip;
     if c.total > 0 {

@@ -54,6 +54,9 @@ impl App {
             self.params.neutralize = !self.params.neutralize;
             self.reload_all();
         }
+        if pressed(Key::A) {
+            self.toggle_stretch();
+        }
         if pressed(Key::C) {
             self.toggle_clip_flash();
         }
