@@ -7,13 +7,15 @@
 //! [`KEEP_RAW`] images; the least important goes first, and anything no longer wanted
 //! goes on every queue change). A star job whose data is gone reads the file again.
 //!
+//! Workers start before the window exists and only wait for [`Loader::attach`] to upload.
+//!
 //! [`Loader::set_queue`] replaces all pending work and bumps a generation counter.
 //! Running jobs check between stages whether they're still wanted and stop early if
 //! not. A panic inside a job is caught and reported as that file's error (or as "no
 //! stars"), so a bad file can't take a worker down.
 
 use super::panic_message;
-use super::texture::{self, Filter, Texture, Uploader};
+use super::texture::{self, Filter, Level, Overlay, Texture, Uploader};
 use blip::stars::StarStats;
 use blip::{image, process, stars};
 use eframe::egui::{self, Pos2, Rect};
@@ -21,7 +23,7 @@ use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
 /// One worker for the image the user is waiting on, one prefetching. More mostly
@@ -133,9 +135,15 @@ impl Queue {
     }
 }
 
+struct Gpu {
+    ctx: egui::Context,
+    uploader: Uploader,
+}
+
 struct Shared {
     queue: Mutex<Queue>,
     wake: Condvar,
+    gpu: OnceLock<Gpu>,
 }
 
 impl Shared {
@@ -143,41 +151,9 @@ impl Shared {
         // Jobs run outside the lock, so it can't be poisoned by one of them.
         self.queue.lock().unwrap()
     }
-}
 
-enum Task {
-    Image(Job),
-    Stars(PathBuf, Option<Raw>),
-}
-
-pub struct Loader {
-    shared: Arc<Shared>,
-    rx: Receiver<Message>,
-}
-
-impl Loader {
-    pub fn new(ctx: egui::Context, uploader: Uploader) -> Self {
-        let shared = Arc::new(Shared {
-            queue: Mutex::new(Queue::default()),
-            wake: Condvar::new(),
-        });
-        let (tx, rx) = channel();
-        for _ in 0..WORKERS {
-            let worker = Worker {
-                shared: shared.clone(),
-                tx: tx.clone(),
-                ctx: ctx.clone(),
-                uploader: uploader.clone(),
-            };
-            std::thread::spawn(move || worker.run());
-        }
-        Self { shared, rx }
-    }
-
-    /// Replace all pending work: `images` to load and `stars` to measure, each in
-    /// priority order. Running jobs that are still wanted continue.
-    pub fn set_queue(&self, images: Vec<PathBuf>, stars: Vec<PathBuf>, settings: Settings) {
-        let mut q = self.shared.lock();
+    fn set_queue(&self, images: Vec<PathBuf>, stars: Vec<PathBuf>, settings: Settings) {
+        let mut q = self.lock();
         q.generation += 1;
         q.wanted_images = (images.into_iter())
             .map(|path| Job { path, settings })
@@ -195,7 +171,50 @@ impl Loader {
             raw, wanted_stars, ..
         } = &mut *q;
         raw.retain(|r| wanted_stars.contains(&r.path));
-        self.shared.wake.notify_all();
+        self.wake.notify_all();
+    }
+}
+
+enum Task {
+    Image(Job),
+    Stars(PathBuf, Option<Raw>),
+}
+
+pub struct Loader {
+    shared: Arc<Shared>,
+    rx: Receiver<Message>,
+}
+
+impl Loader {
+    pub fn new() -> Self {
+        let shared = Arc::new(Shared {
+            queue: Mutex::new(Queue::default()),
+            wake: Condvar::new(),
+            gpu: OnceLock::new(),
+        });
+        let (tx, rx) = channel();
+        for _ in 0..WORKERS {
+            let worker = Worker {
+                shared: shared.clone(),
+                tx: tx.clone(),
+            };
+            std::thread::spawn(move || worker.run());
+        }
+        Self { shared, rx }
+    }
+
+    pub fn attach(&self, ctx: egui::Context, uploader: Uploader) {
+        let _ = self.shared.gpu.set(Gpu { ctx, uploader });
+    }
+
+    /// Replace all pending work: `images` to load and `stars` to measure, each in
+    /// priority order. Running jobs that are still wanted continue.
+    pub fn set_queue(&self, images: Vec<PathBuf>, stars: Vec<PathBuf>, settings: Settings) {
+        self.shared.set_queue(images, stars, settings);
+    }
+
+    pub fn preloader(&self) -> Preloader {
+        Preloader(self.shared.clone())
     }
 
     pub fn try_recv(&self) -> Option<Message> {
@@ -203,11 +222,21 @@ impl Loader {
     }
 }
 
+#[derive(Clone)]
+pub struct Preloader(Arc<Shared>);
+
+impl Preloader {
+    /// Does nothing once anything was queued.
+    pub fn preload(&self, path: PathBuf, settings: Settings) {
+        if self.0.lock().generation == 0 {
+            self.0.set_queue(vec![path], Vec::new(), settings);
+        }
+    }
+}
+
 struct Worker {
     shared: Arc<Shared>,
     tx: Sender<Message>,
-    ctx: egui::Context,
-    uploader: Uploader,
 }
 
 impl Worker {
@@ -236,7 +265,9 @@ impl Worker {
                 if self.tx.send(message).is_err() {
                     return; // The app is gone.
                 }
-                self.ctx.request_repaint();
+                if let Some(gpu) = self.shared.gpu.get() {
+                    gpu.ctx.request_repaint();
+                }
             }
         }
     }
@@ -248,7 +279,7 @@ impl Worker {
             q.generation == generation || q.wanted_images.contains(&job)
         };
         let result = catch_unwind(AssertUnwindSafe(|| {
-            load(&self.uploader, &job.path, job.settings, &wanted)
+            load(&self.shared.gpu, &job.path, job.settings, &wanted)
         }))
         .unwrap_or_else(|panic| Some(Err(format!("internal error: {}", panic_message(&*panic)))));
 
@@ -312,7 +343,7 @@ impl Worker {
 
 /// Read, render and upload. `None` once `wanted` says the result isn't needed.
 fn load(
-    uploader: &Uploader,
+    gpu: &OnceLock<Gpu>,
     path: &Path,
     settings: Settings,
     wanted: &dyn Fn() -> bool,
@@ -328,53 +359,41 @@ fn load(
         return None;
     }
 
-    let t = Instant::now();
-    // "Full resolution" falls back to the least binning that fits the GPU's
-    // texture size limit (typically 8192 or 16384 px).
-    let max_texture = uploader.max_texture_side();
-    let r = match settings.max_side {
-        None if img.width.max(img.height) <= max_texture => {
-            process::render_full::<process::Rgba8>(&img, settings.stretch)
-        }
-        None => process::render(&img, max_texture, settings.stretch),
-        Some(side) => process::render(&img, side.min(max_texture), settings.stretch),
-    };
+    // Before the GPU is ready, assume no texture size limit and redo the render if needed.
     let clip = process::clip_stats(&img);
-    let clip_points = process::clip_points(&img, &clip, r.bin, r.width, r.height, MAX_CLIP_POINTS);
-    let process_ms = ms(t);
+    let limits = |u: &Uploader| (u.max_texture_side(), u.mipmaps());
+    let (max_texture, mipmaps) = gpu
+        .get()
+        .map_or((usize::MAX, true), |g| limits(&g.uploader));
+    let mut prepared = prepare(&img, &clip, settings, max_texture, mipmaps);
+    let uploader = &gpu.wait().uploader;
     if !wanted() {
         return None;
     }
+    let (max_texture, mipmaps) = limits(uploader);
+    if prepared.side != bin_side(&img, settings, max_texture) {
+        prepared = prepare(&img, &clip, settings, max_texture, mipmaps);
+        if !wanted() {
+            return None;
+        }
+    }
 
     let t = Instant::now();
+    let Prepared {
+        r,
+        levels,
+        overlay,
+        process_ms,
+        mips_ms,
+        ..
+    } = prepared;
     let name = path.to_string_lossy();
-    let mipmaps = uploader.mipmaps();
-    let overlay = texture::clip_overlay(&clip_points, r.width, r.height, mipmaps);
-    drop(clip_points);
-    let clip_overlay = overlay.map(|o| {
-        let covered = [r.width, r.height].map(|s| s.div_ceil(o.cell) * o.cell);
-        let uv = Rect::from_min_max(
-            Pos2::ZERO,
-            Pos2::new(
-                r.width as f32 / covered[0] as f32,
-                r.height as f32 / covered[1] as f32,
-            ),
-        );
+    let clip_overlay = overlay.map(|(o, uv)| {
         let texture = uploader.upload(&format!("{name} clipped"), o.levels, Filter::Nearest);
         ClipOverlay { texture, uv }
     });
-    let base = texture::Level {
-        width: r.width,
-        height: r.height,
-        pixels: r.pixels,
-    };
-    let levels = if mipmaps {
-        texture::smooth_mips(base)
-    } else {
-        vec![base]
-    };
     let texture = uploader.upload(&name, levels, Filter::Smooth);
-    let texture_ms = ms(t);
+    let texture_ms = mips_ms + ms(t);
 
     let loaded = Loaded {
         texture,
@@ -396,6 +415,75 @@ fn load(
         clip,
     };
     Some(Ok((loaded, raw)))
+}
+
+/// "Full resolution" falls back to the least binning that fits the GPU's texture size
+/// limit (typically 8192 or 16384 px).
+fn bin_side(img: &image::Image, settings: Settings, max_texture: usize) -> Option<usize> {
+    match settings.max_side {
+        None if img.width.max(img.height) <= max_texture => None,
+        None => Some(max_texture),
+        Some(side) => Some(side.min(max_texture)),
+    }
+}
+
+struct Prepared {
+    side: Option<usize>,
+    r: process::Rendered<process::Rgba8>,
+    levels: Vec<Level>,
+    overlay: Option<(Overlay, Rect)>,
+    process_ms: f64,
+    mips_ms: f64,
+}
+
+fn prepare(
+    img: &image::Image,
+    clip: &process::ClipStats,
+    settings: Settings,
+    max_texture: usize,
+    mipmaps: bool,
+) -> Prepared {
+    let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+    let t = Instant::now();
+    let side = bin_side(img, settings, max_texture);
+    let mut r = match side {
+        None => process::render_full::<process::Rgba8>(img, settings.stretch),
+        Some(side) => process::render(img, side, settings.stretch),
+    };
+    let clip_points = process::clip_points(img, clip, r.bin, r.width, r.height, MAX_CLIP_POINTS);
+    let process_ms = ms(t);
+
+    let t = Instant::now();
+    let overlay = texture::clip_overlay(&clip_points, r.width, r.height, mipmaps).map(|o| {
+        let covered = [r.width, r.height].map(|s| s.div_ceil(o.cell) * o.cell);
+        let uv = Rect::from_min_max(
+            Pos2::ZERO,
+            Pos2::new(
+                r.width as f32 / covered[0] as f32,
+                r.height as f32 / covered[1] as f32,
+            ),
+        );
+        (o, uv)
+    });
+    drop(clip_points);
+    let base = Level {
+        width: r.width,
+        height: r.height,
+        pixels: std::mem::take(&mut r.pixels),
+    };
+    let levels = if mipmaps {
+        texture::smooth_mips(base)
+    } else {
+        vec![base]
+    };
+    Prepared {
+        side,
+        r,
+        levels,
+        overlay,
+        process_ms,
+        mips_ms: ms(t),
+    }
 }
 
 /// One-line summary of the capture from the header.

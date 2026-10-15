@@ -50,15 +50,22 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     let start = args.start;
+    let loader = ui::Loader::new();
+    if let Some(path) = &start {
+        ui::preload(loader.preloader(), path.clone());
+    }
     #[cfg(target_os = "macos")]
-    macos::install_open_handler();
+    {
+        let preloader = loader.preloader();
+        macos::install_open_handler(move |path| ui::preload(preloader.clone(), path));
+    }
     eframe::run_native(
         "blip",
         options,
         Box::new(move |cc| {
             #[cfg(target_os = "macos")]
             macos::set_context(cc.egui_ctx.clone());
-            Ok(Box::new(ui::App::new(cc, start)))
+            Ok(Box::new(ui::App::new(cc, start, loader)))
         }),
     )
 }

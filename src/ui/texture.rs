@@ -71,24 +71,28 @@ impl Uploader {
         matches!(self, Self::Wgpu { .. })
     }
 
-    /// `levels` is the base level followed by its mip chain (if [`Self::mipmaps`]).
+    /// `levels` is the base level followed by its mip chain (egui's textures use the base only).
     pub fn upload(&self, name: &str, levels: Vec<Level>, filter: Filter) -> Texture {
-        let bytes = levels.iter().map(|l| l.width * l.height * 4).sum();
-        let owner = match self {
+        let size = |l: &Level| l.width * l.height * 4;
+        let (bytes, owner) = match self {
             Self::Wgpu {
                 device,
                 queue,
                 renderer,
-            } => Owner::Wgpu(upload_wgpu(device, queue, renderer, name, &levels, filter)),
+            } => (
+                levels.iter().map(size).sum(),
+                Owner::Wgpu(upload_wgpu(device, queue, renderer, name, &levels, filter)),
+            ),
             Self::Egui(ctx) => {
                 let base = levels.into_iter().next().expect("no texture data");
+                let bytes = size(&base);
                 let pixels: Vec<egui::Color32> = bytemuck::allocation::cast_vec(base.pixels);
                 let options = match filter {
                     Filter::Smooth => TextureOptions::LINEAR,
                     Filter::Nearest => TextureOptions::NEAREST,
                 };
                 let image = ColorImage::new([base.width, base.height], pixels);
-                Owner::Egui(ctx.load_texture(name, image, options))
+                (bytes, Owner::Egui(ctx.load_texture(name, image, options)))
             }
         };
         Texture { bytes, owner }

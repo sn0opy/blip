@@ -10,11 +10,12 @@ mod texture;
 mod view;
 
 pub use gpu::wgpu_options;
+pub use loader::{Loader, Preloader};
 
 use blip::process::StretchParams;
 use blip::stars::StarStats;
 use eframe::egui::{self, Vec2};
-use loader::{Loaded, Loader, Message, Settings};
+use loader::{Loaded, Message, Settings};
 use std::any::Any;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -90,15 +91,55 @@ pub struct App {
     export_rx: Receiver<Result<String, String>>,
 }
 
+fn initial_settings() -> Settings {
+    Settings {
+        stretch: StretchParams::default(),
+        max_side: Some(MAX_SIDE),
+    }
+}
+
+pub fn preload(preloader: Preloader, path: PathBuf) {
+    std::thread::spawn(move || {
+        let first = if path.is_dir() {
+            list_images(&path)
+                .ok()
+                .and_then(|files| files.into_iter().next())
+        } else {
+            is_image(&path).then_some(path)
+        };
+        if let Some(first) = first {
+            preloader.preload(first, initial_settings());
+        }
+    });
+}
+
+fn is_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+fn list_images(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| is_image(p))
+        .collect();
+    files.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+    Ok(files)
+}
+
 impl App {
-    pub fn new(cc: &eframe::CreationContext, start: Option<PathBuf>) -> Self {
+    pub fn new(cc: &eframe::CreationContext, start: Option<PathBuf>, loader: Loader) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        loader.attach(
+            cc.egui_ctx.clone(),
+            texture::Uploader::new(&cc.egui_ctx, cc.wgpu_render_state.as_ref()),
+        );
+        let settings = initial_settings();
         let (export_tx, export_rx) = channel();
         let mut app = Self {
-            loader: Loader::new(
-                cc.egui_ctx.clone(),
-                texture::Uploader::new(&cc.egui_ctx, cc.wgpu_render_state.as_ref()),
-            ),
+            loader,
             dir: None,
             last_dir: cc
                 .storage
@@ -112,8 +153,8 @@ impl App {
             shown: None,
             stale: None,
             tick: 0,
-            params: StretchParams::default(),
-            full_res: false,
+            params: settings.stretch,
+            full_res: settings.max_side.is_none(),
             show_info: true,
             show_debug: false,
             show_name_end: false,
@@ -172,18 +213,8 @@ impl App {
     fn refresh(&mut self) {
         let Some(dir) = &self.dir else { return };
         let current = self.current().cloned();
-        self.files = match std::fs::read_dir(dir) {
-            Ok(rd) => {
-                let mut files: Vec<PathBuf> = rd
-                    .filter_map(|e| e.ok())
-                    .map(|e| e.path())
-                    .filter(|p| {
-                        p.extension()
-                            .and_then(|e| e.to_str())
-                            .is_some_and(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
-                    })
-                    .collect();
-                files.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+        self.files = match list_images(dir) {
+            Ok(files) => {
                 if self
                     .status
                     .as_ref()

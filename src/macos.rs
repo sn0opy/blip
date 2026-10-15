@@ -14,11 +14,13 @@ use std::sync::{Mutex, OnceLock};
 
 static OPENED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 static CTX: OnceLock<egui::Context> = OnceLock::new();
+static ON_OPEN: OnceLock<Box<dyn Fn(PathBuf) + Send + Sync>> = OnceLock::new();
 
 /// Adds `application:openURLs:` to winit's app delegate. Must run before the event loop starts:
 /// documents a launch was asked to open are delivered right after the delegate is told the app
 /// will finish launching, and winit only creates the delegate class when the event loop is built.
-pub fn install_open_handler() {
+pub fn install_open_handler(on_open: impl Fn(PathBuf) + Send + Sync + 'static) {
+    let _ = ON_OPEN.set(Box::new(on_open));
     let block = block2::RcBlock::new(|_: NonNull<NSNotification>| {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
@@ -78,6 +80,9 @@ unsafe extern "C-unwind" fn open_urls(
     let Some(first) = urls.iter().find_map(|u| u.to_file_path()) else {
         return;
     };
+    if let Some(on_open) = ON_OPEN.get() {
+        on_open(first.clone());
+    }
     OPENED.lock().unwrap_or_else(|e| e.into_inner()).push(first);
     if let Some(ctx) = CTX.get() {
         ctx.request_repaint();
