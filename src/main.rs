@@ -3,6 +3,8 @@
 #[cfg(target_os = "macos")]
 mod macos;
 mod ui;
+#[cfg(windows)]
+mod windows;
 
 use eframe::egui;
 use std::path::PathBuf;
@@ -65,6 +67,8 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             #[cfg(target_os = "macos")]
             macos::set_context(cc.egui_ctx.clone());
+            #[cfg(windows)]
+            windows::install_move_handler(cc);
             Ok(Box::new(ui::App::new(cc, start, loader)))
         }),
     )

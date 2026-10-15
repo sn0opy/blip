@@ -38,7 +38,8 @@ impl App {
         let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
         if self.scroll_to_selected {
             let id = ui.make_persistent_id("file_list_scroll");
-            let offset = egui::scroll_area::State::load(ui.ctx(), id).map_or(0.0, |s| s.offset.y);
+            let offset =
+                egui::scroll_area::State::load(ui.ctx(), id).map_or(0.0, |s| s.clamped_offset().y);
             let view_h = ui.available_height();
             let top = self.selected as f32 * (row_h + spacing);
             if top < offset {
@@ -80,7 +81,11 @@ impl App {
 
     pub(super) fn image_view(&mut self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
-        let response = ui.interact(rect, ui.id().with("image"), egui::Sense::click_and_drag());
+        let response = ui.interact(
+            rect,
+            ui.scope_id().with("image"),
+            egui::Sense::click_and_drag(),
+        );
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::BLACK);
 

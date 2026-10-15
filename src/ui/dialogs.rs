@@ -28,7 +28,7 @@ impl App {
         if !self.show_help {
             return;
         }
-        let modal = egui::Modal::new(egui::Id::new("help")).show(ctx, |ui| {
+        let modal = egui::Modal::new(egui::Id::unique("help")).show(ctx, |ui| {
             ui.heading("Keyboard shortcuts");
             ui.add_space(6.0);
             egui::Grid::new("shortcuts")
@@ -58,7 +58,7 @@ impl App {
             return;
         };
         let mut decision = None;
-        let modal = egui::Modal::new(egui::Id::new("confirm_delete")).show(ctx, |ui| {
+        let modal = egui::Modal::new(egui::Id::unique("confirm_delete")).show(ctx, |ui| {
             ui.set_width(380.0);
             ui.heading("Delete file?");
             ui.add_space(4.0);
