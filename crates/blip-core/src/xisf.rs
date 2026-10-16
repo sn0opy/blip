@@ -16,6 +16,14 @@ use std::io::Read;
 pub(crate) const SIGNATURE: &[u8] = b"XISF0100";
 /// Signature, header length and a reserved field precede the XML header.
 const PREFIX: usize = 16;
+/// Largest data block accepted. A compressed block can claim any size, and an allocation
+/// that can't succeed aborts (in wasm, where the address space is 4 GiB, it kills the
+/// worker).
+const MAX_RAW_LEN: usize = if cfg!(target_pointer_width = "64") {
+    1 << 35
+} else {
+    1 << 30
+};
 
 /// XISF properties exposed as the FITS keyword they correspond to, for files that
 /// don't carry that keyword themselves.
@@ -222,6 +230,7 @@ impl Layout {
             .checked_mul(height)
             .and_then(|n| n.checked_mul(channels))
             .and_then(|n| n.checked_mul(format.size()))
+            .filter(|&n| n <= MAX_RAW_LEN)
             .ok_or("image dimensions too large")?;
         let compression = attr("compression")
             .map(|c| Compression::parse(c, attr("subblocks"), len))
