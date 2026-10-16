@@ -1,14 +1,15 @@
 [package]
 name = "blip"
-version = "0.3.1"
-edition = "2024"
-rust-version = "1.95"
 description = "blip (Batch Lightframe Inspection & Preview): fast, minimal FITS / XISF image blinker for astrophotography"
-authors = ["Sascha Ohms"]
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
 
 [dependencies]
-bytemuck = { version = "1.25.2", features = ["derive", "extern_crate_alloc"] }
+blip-core = { path = "crates/blip-core" }
+bytemuck.workspace = true
 eframe = { version = "0.37.0", default-features = false, features = [
     "wgpu",
     "default_fonts",
@@ -16,14 +17,8 @@ eframe = { version = "0.37.0", default-features = false, features = [
     "persistence",
     "clipboard",
 ] }
-flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
-image = { version = "0.25.10", default-features = false, features = ["png"] }
-jpeg-encoder = { version = "0.7.1", features = ["simd"] }
-lz4 = "1.28.1"
-quick-xml = "0.42.0"
-rayon = "1.12.0"
+rayon.workspace = true
 rfd = "0.17.2"
-zstd = { version = "0.14.2", default-features = false }
 
 # With eframe's default features off, Linux needs its windowing backends enabled explicitly.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -59,12 +54,23 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSURL",
 ] }
 
+[workspace]
+members = ["crates/blip-core"]
+
+[workspace.package]
+version = "0.3.1"
+edition = "2024"
+rust-version = "1.95"
+authors = ["Sascha Ohms"]
+license = "MIT"
+
+[workspace.dependencies]
+bytemuck = { version = "1.25.2", features = ["derive", "extern_crate_alloc"] }
+rayon = "1.12.0"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
-
-[dev-dependencies]
-image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 
 [build-dependencies]
 winresource = "0.1.31"

@@ -1,6 +1,7 @@
 //! The decoded image shared by the FITS and XISF readers, and the reader dispatch.
 
 use crate::{fits, xisf};
+use std::fmt;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -16,6 +17,17 @@ pub enum Bayer {
     Bggr,
     Grbg,
     Gbrg,
+}
+
+impl fmt::Display for Bayer {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(match self {
+            Self::Rggb => "RGGB",
+            Self::Bggr => "BGGR",
+            Self::Grbg => "GRBG",
+            Self::Gbrg => "GBRG",
+        })
+    }
 }
 
 impl Bayer {
@@ -97,6 +109,31 @@ impl Image {
     pub fn get_f64(&self, key: &str) -> Option<f64> {
         self.get(key).and_then(parse_float)
     }
+
+    /// One-line summary of the capture from the header.
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(v) = self.get("OBJECT") {
+            parts.push(v.to_string());
+        }
+        if let Some(v) = self.get_f64("EXPTIME").or(self.get_f64("EXPOSURE")) {
+            parts.push(format!("{v}s"));
+        }
+        if let Some(v) = self.get("FILTER") {
+            parts.push(v.to_string());
+        }
+        if let Some(v) = self.get("GAIN") {
+            parts.push(format!("gain {v}"));
+        }
+        if let Some(v) = self.get_f64("CCD-TEMP") {
+            parts.push(format!("{v:.1}°C"));
+        }
+        if let Some(v) = self.get("DATE-OBS") {
+            let without_fraction = v.split('.').next().unwrap_or(v);
+            parts.push(without_fraction.replace('T', " "));
+        }
+        parts.join(" · ")
+    }
 }
 
 /// Read a FITS or XISF file, told apart by the XISF signature.
@@ -110,6 +147,15 @@ pub fn read_file(path: &Path) -> Result<Image, String> {
         xisf::read(file, head, len)
     } else {
         fits::read(path, file, head, len)
+    }
+}
+
+/// Parse a FITS or XISF file held in memory, told apart by the XISF signature.
+pub fn parse(bytes: &[u8]) -> Result<Image, String> {
+    if bytes.starts_with(xisf::SIGNATURE) {
+        xisf::parse(bytes)
+    } else {
+        fits::parse(bytes)
     }
 }
 

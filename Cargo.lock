@@ -428,21 +428,30 @@ dependencies = [
 name = "blip"
 version = "0.3.1"
 dependencies = [
+ "blip-core",
  "block2 0.6.2",
  "bytemuck",
  "eframe",
- "flate2",
- "image",
- "jpeg-encoder",
- "lz4",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
- "quick-xml 0.42.0",
  "rayon",
  "rfd",
  "windows-sys 0.61.2",
  "winresource",
+]
+
+[[package]]
+name = "blip-core"
+version = "0.3.1"
+dependencies = [
+ "bytemuck",
+ "flate2",
+ "image",
+ "jpeg-encoder",
+ "lz4",
+ "quick-xml 0.42.0",
+ "rayon",
  "zstd",
 ]
 

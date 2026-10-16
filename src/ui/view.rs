@@ -1,6 +1,6 @@
 use super::{App, CacheEntry, MeasuredStars, STATUS_FADE, draw, file_name};
-use blip::process::StretchParams;
-use blip::stars::StarStats;
+use blip_core::process::StretchParams;
+use blip_core::stars::StarStats;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::path::Path;
 
@@ -294,10 +294,7 @@ fn debug_image(entry: &CacheEntry, stars: Option<&MeasuredStars>, params: Stretc
     } else {
         format!("bin {}", l.bin)
     };
-    let pattern = l
-        .bayer
-        .map(|b| format!(" {b:?}").to_uppercase())
-        .unwrap_or_default();
+    let pattern = l.bayer.map(|b| format!(" {b}")).unwrap_or_default();
     let star_ms = stars.map_or("…".to_string(), |s| format!("{:.0} ms", s.ms));
     let channels: &[&str] = if l.stretch.medians.len() == 3 {
         &["R", "G", "B"]

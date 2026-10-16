@@ -1,0 +1,22 @@
+[package]
+name = "blip-core"
+description = "Image decoding, stretching, star detection and export shared by blip's desktop app and web build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+bytemuck.workspace = true
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+jpeg-encoder = { version = "0.7.1", features = ["simd"] }
+lz4 = "1.28.1"
+quick-xml = "0.42.0"
+rayon.workspace = true
+zstd = { version = "0.14.2", default-features = false }
+
+[dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }

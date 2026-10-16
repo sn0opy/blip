@@ -5,8 +5,6 @@ use image::ImageEncoder;
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
 use rayon::prelude::*;
-use std::fs::File;
-use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 const JPEG_QUALITY: u8 = 92;
@@ -31,27 +29,28 @@ pub fn write_image(dst: &Path, rgb: &[u8], width: usize, height: usize) -> Resul
         Some("png") => (dst.to_path_buf(), false),
         _ => (dst.with_extension("png"), false),
     };
-
     // Encode before creating the file so a failure leaves nothing behind.
-    let jpeg_data = if jpeg {
-        Some(encode_jpeg(rgb, width, height)?)
-    } else {
-        None
-    };
-    let mut file = BufWriter::new(File::create(&dst).map_err(|e| e.to_string())?);
-    match jpeg_data {
-        Some(data) => file.write_all(&data).map_err(|e| e.to_string())?,
-        // Paeth alone is noticeably faster than adaptive filtering at a similar size.
-        None => PngEncoder::new_with_quality(file, CompressionType::Fast, FilterType::Paeth)
-            .write_image(
-                rgb,
-                width as u32,
-                height as u32,
-                image::ExtendedColorType::Rgb8,
-            )
-            .map_err(|e| e.to_string())?,
-    }
+    let data = encode(rgb, width, height, jpeg)?;
+    std::fs::write(&dst, data).map_err(|e| e.to_string())?;
     Ok(dst)
+}
+
+/// Encode packed RGB8 pixels as JPEG or PNG.
+pub fn encode(rgb: &[u8], width: usize, height: usize, jpeg: bool) -> Result<Vec<u8>, String> {
+    if jpeg {
+        return encode_jpeg(rgb, width, height);
+    }
+    let mut out = Vec::new();
+    // Paeth alone is noticeably faster than adaptive filtering at a similar size.
+    PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::Paeth)
+        .write_image(
+            rgb,
+            width as u32,
+            height as u32,
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 /// Baseline 4:4:4 JPEG. The encoder is single-threaded, so horizontal strips are

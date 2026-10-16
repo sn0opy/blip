@@ -16,8 +16,8 @@
 
 use super::panic_message;
 use super::texture::{self, Filter, Level, Overlay, Texture, Uploader};
-use blip::stars::StarStats;
-use blip::{image, process, stars};
+use blip_core::stars::StarStats;
+use blip_core::{image, process, stars};
 use eframe::egui::{self, Pos2, Rect};
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -29,7 +29,6 @@ use std::time::Instant;
 /// One worker for the image the user is waiting on, one prefetching. More mostly
 /// just compete for network bandwidth.
 const WORKERS: usize = 2;
-const MAX_CLIP_POINTS: usize = 4_000_000;
 /// Loaded images whose raw data is kept for a pending star measurement.
 const KEEP_RAW: usize = 3;
 
@@ -380,7 +379,7 @@ fn load(
         return None;
     }
     let (max_texture, mipmaps) = limits(uploader);
-    if prepared.side != bin_side(&img, settings, max_texture) {
+    if prepared.side != process::preview_side(&img, settings.max_side, max_texture) {
         prepared = prepare(&img, &clip, settings, max_texture, mipmaps);
         if !wanted() {
             return None;
@@ -413,7 +412,7 @@ fn load(
         read_ms,
         process_ms,
         texture_ms,
-        info: describe(&img),
+        info: img.describe(),
         clip,
         stretch: r.stretch,
         bayer: img.bayer,
@@ -424,16 +423,6 @@ fn load(
         clip,
     };
     Some(Ok((loaded, raw)))
-}
-
-/// "Full resolution" falls back to the least binning that fits the GPU's texture size
-/// limit (typically 8192 or 16384 px).
-fn bin_side(img: &image::Image, settings: Settings, max_texture: usize) -> Option<usize> {
-    match settings.max_side {
-        None if img.width.max(img.height) <= max_texture => None,
-        None => Some(max_texture),
-        Some(side) => Some(side.min(max_texture)),
-    }
 }
 
 struct Prepared {
@@ -454,12 +443,11 @@ fn prepare(
 ) -> Prepared {
     let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
     let t = Instant::now();
-    let side = bin_side(img, settings, max_texture);
-    let mut r = match side {
-        None => process::render_full::<process::Rgba8>(img, settings.stretch),
-        Some(side) => process::render(img, side, settings.stretch),
-    };
-    let clip_points = process::clip_points(img, clip, r.bin, r.width, r.height, MAX_CLIP_POINTS);
+    // "Full resolution" falls back to the least binning that fits the GPU's texture size
+    // limit (typically 8192 or 16384 px).
+    let side = process::preview_side(img, settings.max_side, max_texture);
+    let (mut r, clip_points) =
+        process::render_preview::<process::Rgba8>(img, clip, side, settings.stretch);
     let process_ms = ms(t);
 
     let t = Instant::now();
@@ -493,29 +481,4 @@ fn prepare(
         process_ms,
         mips_ms: ms(t),
     }
-}
-
-/// One-line summary of the capture from the header.
-fn describe(img: &image::Image) -> String {
-    let mut parts = Vec::new();
-    if let Some(v) = img.get("OBJECT") {
-        parts.push(v.to_string());
-    }
-    if let Some(v) = img.get_f64("EXPTIME").or(img.get_f64("EXPOSURE")) {
-        parts.push(format!("{v}s"));
-    }
-    if let Some(v) = img.get("FILTER") {
-        parts.push(v.to_string());
-    }
-    if let Some(v) = img.get("GAIN") {
-        parts.push(format!("gain {v}"));
-    }
-    if let Some(v) = img.get_f64("CCD-TEMP") {
-        parts.push(format!("{v:.1}°C"));
-    }
-    if let Some(v) = img.get("DATE-OBS") {
-        let without_fraction = v.split('.').next().unwrap_or(v);
-        parts.push(without_fraction.replace('T', " "));
-    }
-    parts.join(" · ")
 }

@@ -13,6 +13,8 @@ pub const MAD_TO_SIGMA: f64 = 1.4826;
 
 /// Full-resolution stretch statistics are taken from about this many pixels per channel.
 const FULL_STATS_SAMPLES: usize = 4_000_000;
+/// Clipped pixels collected for a preview's overlay.
+const MAX_CLIP_POINTS: usize = 4_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StretchParams {
@@ -114,6 +116,31 @@ pub fn render<P: Pixel>(img: &Image, max_side: usize, params: StretchParams) -> 
         bin,
         stretch,
     }
+}
+
+/// The preview's long side for `max_side` (`None` = full resolution), limited to `limit`,
+/// the largest image the frontend can show. `None` means unbinned.
+pub fn preview_side(img: &Image, max_side: Option<usize>, limit: usize) -> Option<usize> {
+    match max_side {
+        None if img.width.max(img.height) <= limit => None,
+        None => Some(limit),
+        Some(side) => Some(side.min(limit)),
+    }
+}
+
+/// The preview for a long side from [`preview_side`], and its clipped pixels.
+pub fn render_preview<P: Pixel>(
+    img: &Image,
+    clip: &ClipStats,
+    side: Option<usize>,
+    params: StretchParams,
+) -> (Rendered<P>, Vec<(u32, u32, u8)>) {
+    let r = match side {
+        None => render_full(img, params),
+        Some(side) => render(img, side, params),
+    };
+    let points = clip_points(img, clip, r.bin, r.width, r.height, MAX_CLIP_POINTS);
+    (r, points)
 }
 
 pub fn render_full<P: Pixel>(img: &Image, params: StretchParams) -> Rendered<P> {

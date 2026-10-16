@@ -12,8 +12,8 @@ mod view;
 pub use gpu::wgpu_options;
 pub use loader::{Loader, Preloader};
 
-use blip::process::StretchParams;
-use blip::stars::StarStats;
+use blip_core::process::StretchParams;
+use blip_core::stars::StarStats;
 use eframe::egui::{self, Vec2};
 use loader::{Loaded, Message, Settings};
 use std::any::Any;
@@ -460,7 +460,7 @@ impl App {
         self.set_status(format!("Exporting {}…", file_name(&dst)), None);
         std::thread::spawn(move || {
             let result = catch_unwind(AssertUnwindSafe(|| {
-                blip::export::export(&src, &dst, params)
+                blip_core::export::export(&src, &dst, params)
             }))
             .unwrap_or_else(|panic| Err(format!("internal error: {}", panic_message(&*panic))));
             let msg = match result {

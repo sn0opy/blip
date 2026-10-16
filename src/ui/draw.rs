@@ -1,7 +1,7 @@
 //! Painting helpers for overlays on top of the image. (Clipped pixels are a texture,
 //! see `texture::clip_overlay`.)
 
-use blip::stars::StarStats;
+use blip_core::stars::StarStats;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
 /// Circle every measured star and label it with its HFR.

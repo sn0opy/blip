@@ -7,19 +7,13 @@
 //! instead of aliased. Without wgpu render state, textures go through egui's texture
 //! manager instead (base level only, copied to the GPU by the UI thread).
 
-use blip::process::{CLIP_BRIGHT, Rgba8};
+use blip_core::overlay::{self, ClipMap};
+use blip_core::process::Rgba8;
 use eframe::egui::{self, ColorImage, TextureHandle, TextureId, TextureOptions, mutex::RwLock};
 use eframe::egui_wgpu::{RenderState, Renderer};
 use eframe::wgpu;
 use rayon::prelude::*;
 use std::sync::{Arc, OnceLock};
-
-/// Long side limit of the clipped-pixel overlay. Markers cover a whole cell of
-/// texture pixels when the image is larger, which keeps the overlay's GPU memory
-/// small next to the image's.
-const OVERLAY_MAX_SIDE: usize = 2048;
-const CLIP_BRIGHT_COLOR: Rgba8 = Rgba8([255, 40, 40, 255]);
-const CLIP_DARK_COLOR: Rgba8 = Rgba8([40, 140, 255, 255]);
 
 /// One mip level, RGBA in egui's gamma-encoded (sRGB) space.
 pub struct Level {
@@ -300,60 +294,34 @@ pub fn clip_overlay(
     height: usize,
     mipmaps: bool,
 ) -> Option<Overlay> {
-    if points.is_empty() {
-        return None;
-    }
-    let cell = width.max(height).div_ceil(OVERLAY_MAX_SIDE);
-    let (mut w, mut h) = (width.div_ceil(cell), height.div_ceil(cell));
-    let mut kinds = vec![0u8; w * h];
-    for &(x, y, kind) in points {
-        let k = &mut kinds[y as usize / cell * w + x as usize / cell];
-        *k = (*k).max(kind);
-    }
-    let mut levels = vec![colorize(&kinds, w, h)];
+    let ClipMap {
+        width: mut w,
+        height: mut h,
+        cell,
+        mut kinds,
+    } = overlay::rasterize(points, width, height)?;
+    let mut levels = vec![clip_level(&kinds, w, h)];
     while mipmaps && (w > 1 || h > 1) {
         let (next, nw, nh) = downsample(&kinds, w, h, |q| q.into_iter().max().unwrap_or(0));
         (kinds, w, h) = (next, nw, nh);
-        levels.push(colorize(&dilate(&kinds, w, h), w, h));
+        levels.push(clip_level(&overlay::dilate(&kinds, w, h), w, h));
     }
     Some(Overlay { levels, cell })
 }
 
-/// Grow marks by one texel in every direction (stronger kind wins).
-fn dilate(kinds: &[u8], w: usize, h: usize) -> Vec<u8> {
-    let mut out = vec![0u8; w * h];
-    out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
-        for (x, o) in row.iter_mut().enumerate() {
-            for ny in y.saturating_sub(1)..(y + 2).min(h) {
-                for nx in x.saturating_sub(1)..(x + 2).min(w) {
-                    *o = (*o).max(kinds[ny * w + nx]);
-                }
-            }
-        }
-    });
-    out
-}
-
-fn colorize(kinds: &[u8], width: usize, height: usize) -> Level {
-    let pixels = kinds
-        .par_iter()
-        .map(|&k| match k {
-            0 => Rgba8::default(),
-            CLIP_BRIGHT => CLIP_BRIGHT_COLOR,
-            _ => CLIP_DARK_COLOR,
-        })
-        .collect();
+fn clip_level(kinds: &[u8], width: usize, height: usize) -> Level {
     Level {
         width,
         height,
-        pixels,
+        pixels: overlay::colorize(kinds),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blip::process::CLIP_DARK;
+    use blip_core::overlay::{CLIP_BRIGHT_COLOR, CLIP_DARK_COLOR};
+    use blip_core::process::{CLIP_BRIGHT, CLIP_DARK};
 
     fn level(width: usize, height: usize, v: u8) -> Level {
         let pixels = vec![Rgba8([v, v, v, 255]); width * height];
@@ -390,14 +358,12 @@ mod tests {
 
     #[test]
     fn overlay_marks_survive_downscaling() {
-        assert!(clip_overlay(&[], 100, 100, true).is_none());
         let points = [
             (10, 10, CLIP_DARK),
             (11, 10, CLIP_BRIGHT),
             (60, 60, CLIP_DARK),
         ];
         let o = clip_overlay(&points, 64, 64, true).unwrap();
-        assert_eq!(o.cell, 1);
         assert_eq!(o.levels.len(), 7);
         let at = |l: &Level, x: usize, y: usize| l.pixels[y * l.width + x];
         assert_eq!(at(&o.levels[0], 10, 10), CLIP_DARK_COLOR);
@@ -408,10 +374,9 @@ mod tests {
         assert_eq!(at(&o.levels[1], 30, 30), CLIP_DARK_COLOR);
         assert_eq!(at(&o.levels[1], 20, 20), Rgba8::default());
         assert!(o.levels[6].pixels[0] == CLIP_BRIGHT_COLOR);
-
-        let big = clip_overlay(&[(4999, 0, CLIP_DARK)], 5000, 10, false).unwrap();
-        assert_eq!((big.cell, big.levels.len()), (3, 1));
-        assert_eq!(big.levels[0].width, 1667);
-        assert_eq!(at(&big.levels[0], 1666, 0), CLIP_DARK_COLOR);
+        assert_eq!(
+            clip_overlay(&points, 64, 64, false).unwrap().levels.len(),
+            1
+        );
     }
 }
