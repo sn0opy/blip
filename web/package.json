@@ -1,0 +1,13 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "3.9.10",
+    "typescript": "7.0.2"
+  }
+}

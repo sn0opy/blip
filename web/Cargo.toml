@@ -1,0 +1,23 @@
+[package]
+name = "blip-web"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Experimental WebAssembly build of blip"
+license = "MIT"
+publish = false
+
+# Standalone, so it doesn't become part of the desktop build (and its Cargo.lock).
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+
+[dependencies]
+blip-core = { path = "../crates/blip-core" }
+wasm-bindgen = "0.2.129"

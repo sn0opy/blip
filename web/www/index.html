@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>blip</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <aside id="side">
+      <button
+        id="list-toggle"
+        data-action="list"
+        title="Hide / show the file list (L)"
+        aria-label="Toggle file list"
+      ></button>
+      <div class="bar">
+        <button id="open-folder" data-action="open" title="Open folder (O)">Open folder…</button>
+        <button id="open-files" data-action="openFiles" title="Open files">Open files…</button>
+        <button
+          id="export"
+          data-action="export"
+          title="Export stretched image as PNG/JPEG at full resolution (E)"
+          disabled
+        >
+          Export…
+        </button>
+      </div>
+      <div id="source">No folder</div>
+      <ul id="list"></ul>
+    </aside>
+    <nav id="toolbar">
+      <button data-action="prev" title="Previous image (↑ ← K)">◀</button>
+      <button data-action="next" title="Next image (↓ → Space J)">▶</button>
+      <button data-action="info" title="Info overlay (I)">Info</button>
+      <button data-action="stars" title="Star sizes (S)">Stars</button>
+      <button data-action="clip" title="Flash clipped pixels (C)">Clip</button>
+      <button data-action="stretch" title="Auto stretch for this image (A)">Stretch</button>
+      <button data-action="neutralize" title="Background neutralization (N)">WB</button>
+      <button data-action="fullRes" title="Full resolution (B)">Full</button>
+      <button data-action="debug" title="Debug info (D)">Debug</button>
+    </nav>
+    <main id="view">
+      <canvas></canvas>
+      <div id="hint">Open a folder (O) or drop a folder / FITS / XISF files here</div>
+      <div id="boxes">
+        <pre id="info" class="box" hidden></pre>
+        <pre id="debug" class="box" hidden></pre>
+      </div>
+      <div id="spinner" hidden></div>
+      <pre id="error" class="box" hidden></pre>
+      <pre id="status" class="box" hidden></pre>
+    </main>
+
+    <dialog id="help">
+      <h2>Keyboard shortcuts</h2>
+      <table id="shortcuts"></table>
+      <form method="dialog"><button>Close</button> <span class="weak">or press ? / Esc</span></form>
+    </dialog>
+
+    <dialog id="export-format">
+      <h2>Export as</h2>
+      <button value="png" autofocus>PNG</button>
+      <button value="jpeg">JPEG</button>
+      <button value="">Cancel</button>
+    </dialog>
+
+    <input id="files" type="file" multiple hidden />
+    <input id="folder" type="file" webkitdirectory hidden />
+    <script type="module" src="main.js"></script>
+  </body>
+</html>

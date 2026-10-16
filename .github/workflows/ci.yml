@@ -26,3 +26,40 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
+  # The web build (web/) shares crates/blip-core; checks it still builds for wasm32.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            . -> target
+            web -> target
+      - name: Clippy (blip-core)
+        run: cargo clippy -p blip-core --target wasm32-unknown-unknown --locked -- -D warnings
+      - name: Format (web)
+        run: cargo fmt --check --manifest-path web/Cargo.toml
+      - name: Clippy (web)
+        run: cargo clippy --manifest-path web/Cargo.toml --target wasm32-unknown-unknown --locked -- -D warnings
+      - name: wasm-bindgen version
+        id: wasm-bindgen
+        run: echo "version=$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = "\(.*\)"$/\1/p;}' web/Cargo.lock)" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: wasm-bindgen-cli@${{ steps.wasm-bindgen.outputs.version }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build (web)
+        run: web/build.sh
+      - name: Prettier (web)
+        working-directory: web
+        run: npm run format:check

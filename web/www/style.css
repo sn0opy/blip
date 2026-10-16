@@ -1,0 +1,352 @@
+/* No page zoom; touch-action isn't inherited into scrolling elements. */
+* {
+  touch-action: manipulation;
+}
+button,
+#toolbar,
+#list {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #1b1b1b;
+  color: #ccc;
+  font:
+    13px system-ui,
+    sans-serif;
+}
+body {
+  display: flex;
+}
+button {
+  font: inherit;
+  color: #ddd;
+  background: #333;
+  border: 1px solid #444;
+  border-radius: 3px;
+  padding: 2px 8px;
+}
+button:hover:not(:disabled) {
+  background: #3d3d3d;
+}
+button:disabled {
+  color: #777;
+}
+.weak {
+  color: #888;
+}
+
+/* Chromium ignores these once scrollbar-color is set, hence the @supports. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #4a4a4a;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: #5e5e5e;
+}
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #4a4a4a transparent;
+  }
+}
+
+#side {
+  width: 280px;
+  min-width: 140px;
+  max-width: 60vw;
+  resize: horizontal;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #333;
+}
+#side {
+  position: relative;
+}
+.bar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 38px 4px 8px;
+  flex-wrap: wrap;
+}
+#list-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  padding: 2px 0;
+}
+#list-toggle::before {
+  content: "‹";
+}
+body.list-hidden #side {
+  width: auto !important;
+  min-width: 0;
+  resize: none;
+  padding: 8px 4px;
+}
+body.list-hidden #side > :not(#list-toggle) {
+  display: none;
+}
+body.list-hidden #list-toggle {
+  position: static;
+}
+body.list-hidden #list-toggle::before {
+  content: "›";
+}
+#source {
+  padding: 0 8px 6px;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid #333;
+}
+#list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow: auto;
+  flex: 1;
+}
+#list li {
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 100%;
+  padding: 2px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  cursor: default;
+}
+#list li:hover {
+  background: #2a2a2a;
+}
+#list li.selected {
+  background: #2c4a6e;
+  color: #fff;
+}
+#list li.error {
+  color: #dc5a5a;
+}
+#list.name-end li {
+  width: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+#toolbar {
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 4px;
+  overflow-y: auto;
+  border-right: 1px solid #333;
+}
+body.touch #toolbar {
+  display: flex;
+}
+#toolbar button {
+  flex: none;
+  min-width: 52px;
+  min-height: 36px;
+}
+#toolbar [data-action="prev"],
+#toolbar [data-action="next"] {
+  font-size: 20px;
+  min-height: 52px;
+}
+#toolbar button[aria-pressed="true"] {
+  background: #2c4a6e;
+  border-color: #3d6491;
+  color: #fff;
+}
+
+#view {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  background: #000;
+  overflow: hidden;
+}
+canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+#hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  font-size: 18px;
+  pointer-events: none;
+}
+.box {
+  position: absolute;
+  margin: 0;
+  padding: 5px;
+  font:
+    12px ui-monospace,
+    Menlo,
+    Consolas,
+    monospace;
+  color: #dcdcdc;
+  background: rgb(0 0 0 / 63%);
+  border-radius: 4px;
+  pointer-events: none;
+  white-space: pre;
+}
+#boxes {
+  position: absolute;
+  inset: 8px 44px auto 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  pointer-events: none;
+}
+#boxes .box {
+  position: static;
+}
+#debug {
+  margin-left: auto;
+}
+#error {
+  left: 10px;
+  bottom: 48px;
+}
+#status {
+  left: 10px;
+  bottom: 26px;
+  transition: opacity 0.8s;
+}
+#spinner {
+  position: absolute;
+  right: 12px;
+  top: 10px;
+  width: 16px;
+  height: 16px;
+  border: 3px solid #555;
+  border-top-color: #ccc;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+[hidden] {
+  display: none !important;
+}
+
+@media (orientation: portrait) {
+  html,
+  body {
+    height: 100dvh;
+  }
+  body {
+    flex-direction: column-reverse;
+  }
+  #side {
+    width: auto;
+    max-width: none;
+    height: 35dvh;
+    min-height: 120px;
+    resize: none;
+    border-right: 0;
+    border-top: 1px solid #333;
+  }
+  #list-toggle::before {
+    content: "▾";
+  }
+  body.list-hidden #list-toggle::before {
+    content: "▴";
+  }
+  body.list-hidden #side {
+    height: auto !important;
+    min-height: 0;
+    padding: 4px 8px;
+    align-items: flex-end;
+  }
+  body.touch #toolbar {
+    display: grid;
+    grid-template-columns: repeat(4, auto) 1fr 1fr;
+    overflow: visible;
+    border-right: 0;
+    border-top: 1px solid #333;
+  }
+  #toolbar button {
+    min-width: 44px;
+    padding: 2px 6px;
+  }
+  #toolbar [data-action="prev"] {
+    grid-area: 1 / 5 / 3 / 6;
+  }
+  #toolbar [data-action="next"] {
+    grid-area: 1 / 6 / 3 / 7;
+  }
+  #hint {
+    padding: 0 20px;
+    text-align: center;
+  }
+  .box {
+    max-width: calc(100% - 30px);
+    white-space: pre-wrap;
+  }
+  #boxes {
+    flex-direction: column;
+  }
+  #boxes .box {
+    max-width: 100%;
+  }
+  #debug {
+    margin-left: 0;
+  }
+}
+
+dialog {
+  background: #222;
+  color: #ccc;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 16px 20px;
+}
+dialog::backdrop {
+  background: rgb(0 0 0 / 50%);
+}
+dialog h2 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+#shortcuts td {
+  padding: 3px 24px 3px 0;
+}
+#shortcuts td:first-child {
+  font:
+    bold 12px ui-monospace,
+    Menlo,
+    Consolas,
+    monospace;
+}
