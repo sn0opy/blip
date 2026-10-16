@@ -1,10 +1,8 @@
 //! Minimal FITS reader: 2D (mono / Bayer) or 3D (RGB planes) images from the primary
 //! HDU or, if that is empty, the first IMAGE extension.
 
-use crate::image::{Bayer, Image, lookup, parse_float, parse_int, read_data};
+use crate::image::{Bayer, Image, Source, lookup, parse_float, parse_int, read_data};
 use rayon::prelude::*;
-use std::fs::File;
-use std::path::Path;
 
 const BLOCK: usize = 2880;
 const CARD: usize = 80;
@@ -14,21 +12,16 @@ const TRUNCATED_HEADER: &str = "unexpected end of file in header";
 type Header = Vec<(String, String)>;
 
 /// Decode a FITS file of `len` bytes whose first bytes `head` were already read.
-pub(crate) fn read(
-    path: &Path,
-    mut file: File,
-    head: Vec<u8>,
-    len: usize,
-) -> Result<Image, String> {
+pub(crate) fn read(file: &mut Source, head: Vec<u8>, len: usize) -> Result<Image, String> {
     // Longer headers and extension images take the slow path.
-    let slow = || parse(&std::fs::read(path).map_err(|e| e.to_string())?);
+    let slow = |file: &mut Source| parse(&file.read_all().map_err(|e| e.to_string())?);
     let (header, data_start) = match parse_header(&head) {
         Ok(h) => h,
-        Err(e) if e == TRUNCATED_HEADER && head.len() < len => return slow(),
+        Err(e) if e == TRUNCATED_HEADER && head.len() < len => return slow(file),
         Err(e) => return Err(e),
     };
     if header_int(&header, "NAXIS")? == Some(0) {
-        return slow();
+        return slow(file);
     }
     let layout = Layout::new(&header)?;
     layout.check_size(data_start, len)?;
@@ -36,16 +29,11 @@ pub(crate) fn read(
     let data = if layout.bitpix == 16 {
         // Read straight into the final buffer and convert in place.
         let mut data = vec![0u16; layout.samples];
-        read_data(
-            &mut file,
-            &head,
-            data_start,
-            bytemuck::cast_slice_mut(&mut data),
-        )?;
+        read_data(file, &head, data_start, bytemuck::cast_slice_mut(&mut data))?;
         convert_i16(data, &layout)
     } else {
         let mut bytes = vec![0u8; layout.data_len];
-        read_data(&mut file, &head, data_start, &mut bytes)?;
+        read_data(file, &head, data_start, &mut bytes)?;
         decode(&bytes, &layout)?
     };
     Ok(layout.into_image(data, header))

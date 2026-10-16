@@ -5,13 +5,11 @@
 //! a crop mask to its masters), checksums and the orientation attribute are ignored.
 
 use crate::fits::parse_value;
-use crate::image::{Bayer, Image, lookup, read_data};
+use crate::image::{Bayer, Image, Source, lookup, read_data};
 use quick_xml::XmlVersion;
 use quick_xml::escape::resolve_predefined_entity;
 use quick_xml::events::{BytesStart, Event};
 use rayon::prelude::*;
-use std::fs::File;
-use std::io::Read;
 
 pub(crate) const SIGNATURE: &[u8] = b"XISF0100";
 /// Signature, header length and a reserved field precede the XML header.
@@ -289,7 +287,7 @@ impl Layout {
 }
 
 /// Decode an XISF file of `len` bytes whose first bytes `head` were already read.
-pub(crate) fn read(mut file: File, mut head: Vec<u8>, len: usize) -> Result<Image, String> {
+pub(crate) fn read(file: &mut Source, mut head: Vec<u8>, len: usize) -> Result<Image, String> {
     let end = header_end(&head)?;
     if end > len {
         return Err("file truncated in XISF header".into());
@@ -303,10 +301,10 @@ pub(crate) fn read(mut file: File, mut head: Vec<u8>, len: usize) -> Result<Imag
     let (layout, header) = parse_header(&head[PREFIX..end])?;
     layout.check_size(len)?;
     decode(layout, header, |l, dst| match &l.compression {
-        None => read_data(&mut file, &head, l.pos, dst),
+        None => read_data(file, &head, l.pos, dst),
         Some(c) => {
             let mut src = vec![0u8; l.len];
-            read_data(&mut file, &head, l.pos, &mut src)?;
+            read_data(file, &head, l.pos, &mut src)?;
             decompress(&src, c, dst)
         }
     })

@@ -5,6 +5,7 @@ use std::fmt;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 /// Bytes read up front. FITS headers are usually 1-3 blocks of 2880 bytes; one generous
 /// read keeps them (and often the start of the data) to a single round trip on network
@@ -138,15 +139,66 @@ impl Image {
 
 /// Read a FITS or XISF file, told apart by the XISF signature.
 pub fn read_file(path: &Path) -> Result<Image, String> {
+    read_file_timed(path).map(|(img, _)| img)
+}
+
+pub struct ReadStats {
+    /// File size.
+    pub bytes: usize,
+    /// Time spent opening and reading the file; the rest went into decoding.
+    pub io: Duration,
+}
+
+pub fn read_file_timed(path: &Path) -> Result<(Image, ReadStats), String> {
     let err = |e: std::io::Error| e.to_string();
-    let mut file = File::open(path).map_err(err)?;
+    let t = Instant::now();
+    let file = File::open(path).map_err(err)?;
     let len = usize::try_from(file.metadata().map_err(err)?.len()).map_err(|_| "file too large")?;
+    let mut src = Source {
+        file,
+        io: t.elapsed(),
+    };
     let mut head = vec![0u8; len.min(HEAD)];
-    file.read_exact(&mut head).map_err(err)?;
-    if head.starts_with(xisf::SIGNATURE) {
-        xisf::read(file, head, len)
+    src.read_exact(&mut head).map_err(err)?;
+    let img = if head.starts_with(xisf::SIGNATURE) {
+        xisf::read(&mut src, head, len)
     } else {
-        fits::read(path, file, head, len)
+        fits::read(&mut src, head, len)
+    }?;
+    Ok((
+        img,
+        ReadStats {
+            bytes: len,
+            io: src.io,
+        },
+    ))
+}
+
+/// An open image file that adds up the time spent reading it.
+pub(crate) struct Source {
+    file: File,
+    io: Duration,
+}
+
+impl Source {
+    fn timed<T>(&mut self, f: impl FnOnce(&mut File) -> std::io::Result<T>) -> std::io::Result<T> {
+        let t = Instant::now();
+        let result = f(&mut self.file);
+        self.io += t.elapsed();
+        result
+    }
+
+    pub(crate) fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
+        self.timed(|f| f.read_exact(buf))
+    }
+
+    pub(crate) fn read_all(&mut self) -> std::io::Result<Vec<u8>> {
+        self.timed(|f| {
+            f.seek(SeekFrom::Start(0))?;
+            let mut bytes = Vec::new();
+            f.read_to_end(&mut bytes)?;
+            Ok(bytes)
+        })
     }
 }
 
@@ -162,7 +214,7 @@ pub fn parse(bytes: &[u8]) -> Result<Image, String> {
 /// Fill `dst` with the file's bytes from `start` on, reusing what `head` (the file's
 /// first bytes) already holds.
 pub(crate) fn read_data(
-    file: &mut File,
+    file: &mut Source,
     head: &[u8],
     start: usize,
     dst: &mut [u8],
@@ -171,7 +223,7 @@ pub(crate) fn read_data(
     let have = cached.len().min(dst.len());
     dst[..have].copy_from_slice(&cached[..have]);
     if have < dst.len() {
-        file.seek(SeekFrom::Start((start + have) as u64))
+        file.timed(|f| f.seek(SeekFrom::Start((start + have) as u64)))
             .map_err(|e| e.to_string())?;
         file.read_exact(&mut dst[have..])
             .map_err(|e| format!("file truncated: {e}"))?;

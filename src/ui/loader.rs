@@ -47,7 +47,9 @@ pub struct Loaded {
     pub size: [usize; 2],
     pub src_size: [usize; 2],
     pub bin: usize,
+    pub file_bytes: usize,
     pub read_ms: f64,
+    pub decode_ms: f64,
     pub process_ms: f64,
     /// Building mipmaps and uploading.
     pub texture_ms: f64,
@@ -75,10 +77,27 @@ pub enum Message {
     Stars(PathBuf, StarStats, f64),
 }
 
+/// What a worker is busy with.
+#[derive(Clone)]
+pub enum Work {
+    Image(Job),
+    Stars(PathBuf),
+}
+
+/// What the workers are doing, for the debug panel.
+pub struct Status {
+    pub workers: [Option<Work>; WORKERS],
+    /// Jobs waiting for a worker.
+    pub queued_images: usize,
+    pub queued_stars: usize,
+    pub raw_images: usize,
+    pub raw_bytes: usize,
+}
+
 #[derive(Clone, PartialEq)]
-struct Job {
-    path: PathBuf,
-    settings: Settings,
+pub struct Job {
+    pub path: PathBuf,
+    pub settings: Settings,
 }
 
 struct Raw {
@@ -95,20 +114,31 @@ struct Queue {
     /// part of it not running yet.
     wanted_images: Vec<Job>,
     images: VecDeque<Job>,
-    running_images: Vec<Job>,
     waiting_for: Option<Job>,
     wanted_stars: Vec<PathBuf>,
     stars: VecDeque<PathBuf>,
-    running_stars: Vec<PathBuf>,
     raw: Vec<Raw>,
+    /// What each worker is running.
+    working: [Option<Work>; WORKERS],
 }
 
 impl Queue {
+    fn running_images(&self) -> impl Iterator<Item = &Job> {
+        self.working.iter().filter_map(|w| match w {
+            Some(Work::Image(job)) => Some(job),
+            _ => None,
+        })
+    }
+
+    fn running_stars(&self, path: &Path) -> bool {
+        (self.working.iter()).any(|w| matches!(w, Some(Work::Stars(p)) if p == path))
+    }
+
     /// The most important star job that doesn't wait for its image to load.
     fn next_star_job(&mut self) -> Option<PathBuf> {
         let loading = |p: &PathBuf| {
             (self.images.iter())
-                .chain(&self.running_images)
+                .chain(self.running_images())
                 .any(|j| j.path == *p)
         };
         let i = self.stars.iter().position(|p| !loading(p))?;
@@ -160,11 +190,11 @@ impl Shared {
             .collect();
         q.waiting_for = q.wanted_images.first().filter(|_| waiting).cloned();
         q.images = (q.wanted_images.iter())
-            .filter(|j| !q.running_images.contains(j))
+            .filter(|j| !q.running_images().any(|r| r == *j))
             .cloned()
             .collect();
         q.stars = (stars.iter())
-            .filter(|p| !q.running_stars.contains(p))
+            .filter(|p| !q.running_stars(p))
             .cloned()
             .collect();
         q.wanted_stars = stars;
@@ -194,8 +224,9 @@ impl Loader {
             gpu: OnceLock::new(),
         });
         let (tx, rx) = channel();
-        for _ in 0..WORKERS {
+        for id in 0..WORKERS {
             let worker = Worker {
+                id,
                 shared: shared.clone(),
                 tx: tx.clone(),
             };
@@ -222,6 +253,17 @@ impl Loader {
     pub fn try_recv(&self) -> Option<Message> {
         self.rx.try_recv().ok()
     }
+
+    pub fn status(&self) -> Status {
+        let q = self.shared.lock();
+        Status {
+            workers: q.working.clone(),
+            queued_images: q.images.len(),
+            queued_stars: q.stars.len(),
+            raw_images: q.raw.len(),
+            raw_bytes: q.raw.iter().map(|r| size_of_val(&r.img.data[..])).sum(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -237,6 +279,7 @@ impl Preloader {
 }
 
 struct Worker {
+    id: usize,
     shared: Arc<Shared>,
     tx: Sender<Message>,
 }
@@ -247,36 +290,41 @@ impl Worker {
             let (task, generation) = {
                 let mut q = self.shared.lock();
                 loop {
-                    let busy =
-                        (q.waiting_for.as_ref()).is_some_and(|j| q.running_images.contains(j));
+                    let busy = (q.waiting_for.as_ref())
+                        .is_some_and(|j| q.running_images().any(|r| r == j));
                     if busy {
                         q = self.shared.wake.wait(q).unwrap();
                         continue;
                     }
                     if let Some(job) = q.images.pop_front() {
-                        q.running_images.push(job.clone());
+                        q.working[self.id] = Some(Work::Image(job.clone()));
                         break (Task::Image(job), q.generation);
                     }
                     if let Some(path) = q.next_star_job() {
-                        q.running_stars.push(path.clone());
+                        q.working[self.id] = Some(Work::Stars(path.clone()));
                         let raw = q.take_raw(&path);
                         break (Task::Stars(path, raw), q.generation);
                     }
                     q = self.shared.wake.wait(q).unwrap();
                 }
             };
+            self.repaint();
             let message = match task {
                 Task::Image(job) => self.image(job, generation),
                 Task::Stars(path, raw) => self.stars(path, raw, generation),
             };
-            if let Some(message) = message {
-                if self.tx.send(message).is_err() {
-                    return; // The app is gone.
-                }
-                if let Some(gpu) = self.shared.gpu.get() {
-                    gpu.ctx.request_repaint();
-                }
+            if let Some(message) = message
+                && self.tx.send(message).is_err()
+            {
+                return; // The app is gone.
             }
+            self.repaint();
+        }
+    }
+
+    fn repaint(&self) {
+        if let Some(gpu) = self.shared.gpu.get() {
+            gpu.ctx.request_repaint();
         }
     }
 
@@ -292,9 +340,7 @@ impl Worker {
         .unwrap_or_else(|panic| Some(Err(format!("internal error: {}", panic_message(&*panic)))));
 
         let mut q = self.shared.lock();
-        if let Some(i) = q.running_images.iter().position(|j| *j == job) {
-            q.running_images.swap_remove(i);
-        }
+        q.working[self.id] = None;
         let result = result.map(|result| match result {
             Ok((loaded, raw)) => {
                 q.keep_raw(raw);
@@ -339,11 +385,7 @@ impl Worker {
         }))
         .unwrap_or_else(|_| Some((StarStats::default(), 0.0)));
 
-        let mut q = self.shared.lock();
-        if let Some(i) = q.running_stars.iter().position(|p| *p == path) {
-            q.running_stars.swap_remove(i);
-        }
-        drop(q);
+        self.shared.lock().working[self.id] = None;
         let (stats, ms) = result?;
         Some(Message::Stars(path, stats, ms))
     }
@@ -358,11 +400,12 @@ fn load(
 ) -> Option<Result<(Loaded, Raw), String>> {
     let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
     let t = Instant::now();
-    let img = match image::read_file(path) {
-        Ok(img) => img,
+    let (img, read) = match image::read_file_timed(path) {
+        Ok(r) => r,
         Err(e) => return Some(Err(e)),
     };
-    let read_ms = ms(t);
+    let read_ms = read.io.as_secs_f64() * 1000.0;
+    let decode_ms = ms(t) - read_ms;
     if !wanted() {
         return None;
     }
@@ -409,7 +452,9 @@ fn load(
         size: [r.width, r.height],
         src_size: [img.width, img.height],
         bin: r.bin,
+        file_bytes: read.bytes,
         read_ms,
+        decode_ms,
         process_ms,
         texture_ms,
         info: img.describe(),

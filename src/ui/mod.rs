@@ -61,6 +61,10 @@ pub struct App {
     errors: HashMap<PathBuf, String>,
     /// The image on screen; lags behind `selected` while the next one loads.
     shown: Option<PathBuf>,
+    /// For the debug panel: when the current image was selected, and how long it then
+    /// took to show (ms).
+    selected_at: Option<(PathBuf, Instant)>,
+    shown_after: Option<f64>,
     /// The shown image while a settings change re-renders it (avoids a black flash).
     stale: Option<(PathBuf, CacheEntry)>,
     tick: u64,
@@ -153,6 +157,8 @@ impl App {
             cache: HashMap::new(),
             errors: HashMap::new(),
             shown: None,
+            selected_at: None,
+            shown_after: None,
             stale: None,
             tick: 0,
             params: settings.stretch,
@@ -260,15 +266,22 @@ impl App {
         self.select(i as usize);
     }
 
-    /// Queue the current image first, then prefetch neighbors (mostly ahead), and
-    /// measure stars of the same files where still missing.
-    fn request_loads(&mut self) {
+    /// The current image, then its neighbors (mostly ahead), with their offsets from the
+    /// current one.
+    fn prefetch_window(&self) -> Vec<(isize, &PathBuf)> {
         let d = self.direction;
         let s = self.selected as isize;
-        let window: Vec<&PathBuf> = [s, s + d, s + 2 * d, s - d, s + 3 * d]
+        [0, d, 2 * d, -d, 3 * d]
             .into_iter()
-            .filter(|&i| i >= 0 && (i as usize) < self.files.len())
-            .map(|i| &self.files[i as usize])
+            .filter_map(|o| Some((o, self.files.get(usize::try_from(s + o).ok()?)?)))
+            .collect()
+    }
+
+    /// Queue the current image first, then prefetch neighbors, and measure stars of
+    /// the same files where still missing.
+    fn request_loads(&mut self) {
+        let window: Vec<&PathBuf> = (self.prefetch_window().into_iter())
+            .map(|(_, p)| p)
             .filter(|p| !self.errors.contains_key(*p))
             .collect();
         let missing = |have: &dyn Fn(&PathBuf) -> bool| -> Vec<PathBuf> {

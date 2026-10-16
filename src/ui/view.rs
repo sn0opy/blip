@@ -1,8 +1,10 @@
+use super::loader::Work;
 use super::{App, CacheEntry, MeasuredStars, STATUS_FADE, draw, file_name};
 use blip_core::process::StretchParams;
 use blip_core::stars::StarStats;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 /// On/off period of the clipped-pixel flash, in seconds.
 const FLASH_PERIOD: f64 = 0.8;
@@ -90,11 +92,19 @@ impl App {
         painter.rect_filled(rect, 0.0, Color32::BLACK);
 
         let current = self.current().cloned();
+        if self.selected_at.as_ref().map(|(p, _)| p) != current.as_ref() {
+            self.selected_at = current.clone().map(|p| (p, Instant::now()));
+            self.shown_after = None;
+        }
         if let Some(cur) = &current
             && self.cache.contains_key(cur)
         {
             self.shown = Some(cur.clone());
             self.stale = None;
+            if self.shown_after.is_none() {
+                self.shown_after =
+                    (self.selected_at.as_ref()).map(|(_, t)| t.elapsed().as_secs_f64() * 1000.0);
+            }
         }
         self.zoom_and_pan(ui, &response, rect);
 
@@ -103,6 +113,7 @@ impl App {
         let mut debug_drawn = false;
 
         let params = (self.shown.as_ref()).map_or(self.params, |p| self.settings(p).stretch);
+        let shown_after = self.shown_after;
         let shown = self.shown.as_ref().and_then(|p| {
             let stale = self
                 .stale
@@ -152,7 +163,11 @@ impl App {
                 draw::text_box(&painter, rect.left_top() + Vec2::new(10.0, 8.0), &text, 1.0);
             }
             if let Some(general) = &debug_general {
-                let text = format!("{}\n{general}", debug_image(entry, stars, params));
+                let shown_after = shown_after.filter(|_| is_current);
+                let text = format!(
+                    "{}\n{general}",
+                    debug_image(entry, stars, params, shown_after)
+                );
                 draw::text_box_aligned(&painter, debug_pos, egui::Align2::RIGHT_TOP, &text, 1.0);
                 debug_drawn = true;
             }
@@ -224,14 +239,55 @@ impl App {
             .chain(self.stale.as_ref().map(|(_, e)| e))
             .map(|e| e.loaded.gpu_bytes())
             .sum();
-        format!(
-            "cache {}/{} images · {} MB on GPU · {} star measurements\nGPU {}",
-            self.cache.len(),
-            self.cache_limit(),
-            gpu_bytes / (1 << 20),
-            self.stars.len(),
-            self.gpu_info
-        )
+        let status = self.loader.status();
+        let loading = |p: &PathBuf| {
+            (status.workers.iter()).any(|w| matches!(w, Some(Work::Image(j)) if j.path == *p))
+        };
+        let prefetch = (self.prefetch_window().into_iter())
+            .filter(|(o, _)| *o != 0)
+            .map(|(o, p)| {
+                let state = if self.cache.contains_key(p) {
+                    "cached"
+                } else if self.errors.contains_key(p) {
+                    "error"
+                } else if loading(p) {
+                    "loading"
+                } else {
+                    "queued"
+                };
+                format!("{o:+} {state}")
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let mut lines = vec![
+            format!(
+                "cache {}/{} images · {} MB on GPU · {} star measurements",
+                self.cache.len(),
+                self.cache_limit(),
+                gpu_bytes / (1 << 20),
+                self.stars.len(),
+            ),
+            format!("GPU {}", self.gpu_info),
+            format!("prefetch {prefetch}"),
+            format!(
+                "queue: {} images · {} star measurements waiting",
+                status.queued_images, status.queued_stars
+            ),
+            format!(
+                "raw data kept for stars: {} images · {} MB",
+                status.raw_images,
+                status.raw_bytes / (1 << 20)
+            ),
+        ];
+        for (i, work) in status.workers.iter().enumerate() {
+            let work = match work {
+                None => "idle".to_string(),
+                Some(Work::Image(job)) => format!("image {}", file_name(&job.path)),
+                Some(Work::Stars(path)) => format!("stars {}", file_name(path)),
+            };
+            lines.push(format!("worker {}: {work}", i + 1));
+        }
+        lines.join("\n")
     }
 
     fn status_line(&mut self, ui: &egui::Ui, painter: &egui::Painter, rect: Rect) {
@@ -287,7 +343,12 @@ fn elide_start(ui: &egui::Ui, name: &str, max_width: f32) -> String {
 }
 
 /// Debug lines for the shown image: geometry, timings, stretch, saturation level.
-fn debug_image(entry: &CacheEntry, stars: Option<&MeasuredStars>, params: StretchParams) -> String {
+fn debug_image(
+    entry: &CacheEntry,
+    stars: Option<&MeasuredStars>,
+    params: StretchParams,
+    shown_after: Option<f64>,
+) -> String {
     let l = &entry.loaded;
     let mode = if l.bin == 1 {
         "full res".to_string()
@@ -310,14 +371,25 @@ fn debug_image(entry: &CacheEntry, stars: Option<&MeasuredStars>, params: Stretc
             .join(" ")
     };
     let s = &l.stretch;
+    let mb = l.file_bytes as f64 / f64::from(1 << 20);
     [
         format!(
             "sensor {}×{}{pattern} → texture {}×{} ({mode})",
             l.src_size[0], l.src_size[1], l.size[0], l.size[1]
         ),
+        shown_after.map_or("selected image still loading".to_string(), |ms| {
+            format!("shown {ms:.0} ms after selecting")
+        }),
         format!(
-            "read {:.0} ms · process {:.0} ms · texture {:.0} ms · stars {star_ms}",
-            l.read_ms, l.process_ms, l.texture_ms
+            "read {:.0} ms ({:.0} MB, {:.0} MB/s) · decode {:.0} ms",
+            l.read_ms,
+            mb,
+            mb / (l.read_ms / 1000.0).max(1e-3),
+            l.decode_ms
+        ),
+        format!(
+            "process {:.0} ms · texture {:.0} ms · stars {star_ms}",
+            l.process_ms, l.texture_ms
         ),
         format!(
             "background {} ADU · gain {}",
