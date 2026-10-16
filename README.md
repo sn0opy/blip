@@ -12,9 +12,7 @@ image, or the Linux Flatpak (x86_64 or aarch64) or `.tar.gz` from the
 [releases](../../releases). Install the Flatpak with
 `flatpak install --user blip-<version>-linux-<arch>.flatpak`.
 
-To build from source you need Rust 1.95 or newer (the MSVC toolchain on Windows) and a C
-compiler for the bundled LZ4 and Zstandard sources: the Xcode Command Line Tools on macOS, the
-Visual Studio Build Tools the MSVC toolchain already requires on Windows, gcc or clang on Linux.
+To build from source you need Rust 1.95 or newer (the MSVC toolchain on Windows).
 
 ```sh
 cargo build --release

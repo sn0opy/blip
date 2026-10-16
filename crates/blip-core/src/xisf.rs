@@ -515,11 +515,17 @@ fn decompress_part(codec: Codec, src: &[u8], dst: &mut [u8]) -> Result<(), Strin
             }
             z.total_out() as usize
         }
-        Codec::Lz4 => {
-            let size = i32::try_from(dst.len()).map_err(|_| "LZ4 block too large")?;
-            lz4::block::decompress_to_buffer(src, Some(size), dst).map_err(|e| corrupt(&e))?
+        Codec::Lz4 => lz4_flex::block::decompress_into(src, dst).map_err(|e| corrupt(&e))?,
+        Codec::Zstd => {
+            // zrip appends to a Vec. The limit keeps corrupt data from growing it past
+            // the expected size.
+            let mut out = Vec::with_capacity(dst.len());
+            zrip::DecompressContext::new()
+                .decompress_into_with_limit(src, &mut out, dst.len())
+                .map_err(|e| corrupt(&e))?;
+            dst[..out.len()].copy_from_slice(&out);
+            out.len()
         }
-        Codec::Zstd => zstd::bulk::decompress_to_buffer(src, dst).map_err(|e| corrupt(&e))?,
     };
     if n != dst.len() {
         return Err(corrupt(&format!("{n} of {} bytes", dst.len())));
@@ -774,12 +780,9 @@ mod tests {
                 z.write_all(data).unwrap();
                 z.finish().unwrap()
             }
-            "lz4" => lz4::block::compress(data, None, false).unwrap(),
-            "lz4hc" => {
-                let mode = lz4::block::CompressionMode::HIGHCOMPRESSION(9);
-                lz4::block::compress(data, Some(mode), false).unwrap()
-            }
-            "zstd" => zstd::bulk::compress(data, 3).unwrap(),
+            // LZ4HC only names the encoder setting; the block format is LZ4's.
+            "lz4" | "lz4hc" => lz4_flex::block::compress(data),
+            "zstd" => zrip::compress(data, 3).unwrap(),
             _ => unreachable!(),
         };
         for codec in ["zlib", "lz4", "lz4hc", "zstd"] {
@@ -829,6 +832,11 @@ mod tests {
         assert!(parse_err(&one(&attrs, "", &corrupt)).contains("corrupt"));
         let short = compress("zstd", &u16_raw[2..]);
         assert!(parse_err(&one(&attrs, "", &short)).contains("corrupt"));
+        for codec in ["lz4", "zstd"] {
+            let long = compress(codec, &[&u16_raw[..], &[0; 2]].concat());
+            let attrs = attrs.replace("zstd:", &format!("{codec}:"));
+            assert!(parse_err(&one(&attrs, "", &long)).contains("corrupt"));
+        }
         let bad = |compression: &str| {
             let attrs = format!(r#"geometry="1:1:1" sampleFormat="UInt8" {compression}"#);
             parse_err(&one(&attrs, "", &[0; 4]))
@@ -947,7 +955,7 @@ mod tests {
         let filter = "x".repeat(400_000);
         let children =
             format!(r#"<Property id="Instrument:Filter:Name" type="String">{filter}</Property>"#);
-        let packed = zstd::bulk::compress(&shuffle(&raw, 2), 1).unwrap();
+        let packed = zrip::compress(&shuffle(&raw, 2), 1).unwrap();
         let attrs = format!(r#"{attrs} compression="zstd+sh:4:2""#);
         let file = one(&attrs, &children, &packed);
         assert_eq!(
