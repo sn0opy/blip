@@ -2,15 +2,6 @@ use eframe::egui_wgpu::{SurfaceConfig, WgpuConfiguration, WgpuSetup, WgpuSetupCr
 use eframe::wgpu::{self, Backend, Backends, PresentMode};
 use std::sync::Arc;
 
-/// GPU setup tuned for smooth window dragging.
-///
-/// eframe repaints on every window-move event, and waiting for vblank there stalls the
-/// OS move loop, so presentation doesn't wait for vsync on Windows (egui only repaints
-/// on events, so this doesn't spin the GPU). Vulkan moves smoothly on Windows while
-/// DX12 hitches on vertical moves, so Vulkan is preferred, with DX12 as a fallback for
-/// machines without a Vulkan driver.
-///
-/// `backend` (or `WGPU_BACKEND`) and `present` override the defaults for experiments.
 pub fn wgpu_options(backend: Option<&str>, present: Option<&str>) -> WgpuConfiguration {
     let mut setup = WgpuSetupCreateNew::without_display_handle();
     let backends = match backend {
