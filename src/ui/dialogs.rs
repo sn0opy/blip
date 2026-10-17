@@ -43,6 +43,8 @@ impl App {
                 });
             ui.add_space(6.0);
             ui.label(egui::RichText::new("Press ? or Esc to close").weak());
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(concat!("blip ", env!("CARGO_PKG_VERSION"))).weak());
         });
         let toggled = ctx.input_mut(|i| {
             i.consume_key(Modifiers::NONE, Key::Questionmark)
