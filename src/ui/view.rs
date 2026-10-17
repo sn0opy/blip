@@ -37,7 +37,7 @@ impl App {
 
         let row_h = ui.spacing().interact_size.y;
         let spacing = ui.spacing().item_spacing.y;
-        let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+        let mut area = egui::ScrollArea::both().auto_shrink([false, false]);
         if self.scroll_to_selected {
             let id = ui.make_persistent_id("file_list_scroll");
             let offset =
@@ -54,22 +54,15 @@ impl App {
         let mut clicked = None;
         area.id_salt("file_list_scroll")
             .show_rows(ui, row_h, self.files.len(), |ui, range| {
-                let text_width = ui.available_width() - 2.0 * ui.spacing().button_padding.x;
                 for i in range {
                     let path = &self.files[i];
-                    let name = file_name(path);
-                    let name = if self.show_name_end {
-                        elide_start(ui, &name, text_width)
-                    } else {
-                        name
-                    };
-                    let mut text = egui::RichText::new(name);
+                    let mut text = egui::RichText::new(file_name(path));
                     if self.errors.contains_key(path) {
                         text = text.color(Color32::from_rgb(220, 90, 90));
                     }
                     let button =
                         egui::Button::selectable(i == self.selected, (text, egui::Atom::grow()))
-                            .truncate()
+                            .wrap_mode(egui::TextWrapMode::Extend)
                             .min_size(Vec2::new(ui.available_width(), row_h));
                     if ui.add(button).clicked() {
                         clicked = Some(i);
@@ -309,37 +302,6 @@ impl App {
             None => {}
         }
     }
-}
-
-/// Shorten `name` from the front ("…_0001.fit") so it fits into `max_width`.
-fn elide_start(ui: &egui::Ui, name: &str, max_width: f32) -> String {
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    let fits = |s: &str| {
-        let galley = ui
-            .painter()
-            .layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE);
-        galley.size().x <= max_width
-    };
-    if fits(name) {
-        return name.to_owned();
-    }
-    let chars: Vec<char> = name.chars().collect();
-    let with_ellipsis = |skip: usize| -> String {
-        std::iter::once('…')
-            .chain(chars[skip..].iter().copied())
-            .collect()
-    };
-    // Smallest number of leading characters to drop.
-    let (mut lo, mut hi) = (1, chars.len());
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        if fits(&with_ellipsis(mid)) {
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
-    }
-    with_ellipsis(lo)
 }
 
 /// Debug lines for the shown image: geometry, timings, stretch, saturation level.

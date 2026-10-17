@@ -143,13 +143,6 @@ body.list-hidden #list-toggle::before {
 #list li.error {
   color: #dc5a5a;
 }
-#list.name-end li {
-  width: auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  direction: rtl;
-  text-align: left;
-}
 
 #toolbar {
   display: none;

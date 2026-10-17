@@ -9,9 +9,8 @@ export function initList() {
 }
 
 export function renderList(onSelect: (index: number) => void) {
-  // The marks keep punctuation in place when T shows names right-to-left.
   const items = state.files.map((f, i) =>
-    el("li", { textContent: `‎${f.name}‎`, title: f.name, onclick: () => onSelect(i) }),
+    el("li", { textContent: f.name, title: f.name, onclick: () => onSelect(i) }),
   );
   list.replaceChildren(...items);
   selectedItem = null;
@@ -47,8 +46,4 @@ function showList(visible: boolean) {
   document.body.classList.toggle("list-hidden", !visible);
   storage?.setItem("blip.listHidden", visible ? "" : "1");
   if (visible) revealSelected();
-}
-
-export function toggleNameEnds() {
-  list.classList.toggle("name-end");
 }

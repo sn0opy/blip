@@ -30,7 +30,6 @@ cargo build --release
 | Mouse wheel / drag / double-click | zoom / pan / reset (zoom is kept while blinking) |
 | <kbd>F</kbd> or <kbd>0</kbd> | reset zoom |
 | <kbd>I</kbd> | toggle the info overlay (capture details, star size, clipping stats) |
-| <kbd>T</kbd> | toggle start / end of long file names in the file list |
 | <kbd>D</kbd> | toggle the debug panel (timings, stretch values, cache, GPU) |
 | <kbd>N</kbd> | toggle background neutralization (auto white balance) |
 | <kbd>S</kbd> | toggle the measured star sizes (HFR) on the current image |

@@ -47,9 +47,6 @@ impl App {
         if pressed(Key::D) {
             self.show_debug = !self.show_debug;
         }
-        if pressed(Key::T) {
-            self.show_name_end = !self.show_name_end;
-        }
         if pressed(Key::N) {
             self.params.neutralize = !self.params.neutralize;
             self.reload_all();

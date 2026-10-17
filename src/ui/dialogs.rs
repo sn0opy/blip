@@ -15,7 +15,6 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("B", "Toggle binned preview / full resolution"),
     ("N", "Toggle background neutralization (white balance)"),
     ("I", "Toggle info overlay"),
-    ("T", "Toggle start / end of long names in the file list"),
     ("D", "Toggle debug info (timings, stretch, cache, GPU)"),
     ("E, Ctrl+S", "Export as PNG / JPEG (full resolution)"),
     ("O, Ctrl+O", "Open folder"),

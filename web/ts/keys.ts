@@ -12,7 +12,7 @@ import {
 import { $, el } from "./dom.js";
 import { exportCurrent } from "./export.js";
 import { canRescan, openFiles, openFolder, rescan } from "./files.js";
-import { toggleList, toggleNameEnds } from "./list.js";
+import { toggleList } from "./list.js";
 import { state } from "./state.js";
 import { resetZoom } from "./view.js";
 
@@ -42,7 +42,6 @@ const actions = {
   stars: toggleStars,
   fullRes: toggleFullRes,
   fit: resetZoom,
-  names: toggleNameEnds,
   list: toggleList,
   open: openFolder,
   openFiles,
@@ -70,7 +69,6 @@ const SHORTCUTS: [keys: string, description: string, ...Binding[]][] = [
   ["B", "Toggle binned preview / full resolution", ["fullRes", "b"]],
   ["N", "Toggle background neutralization (white balance)", ["neutralize", "n"]],
   ["I", "Toggle info overlay", ["info", "i"]],
-  ["T", "File list: scroll long names sideways / show their ends", ["names", "t"]],
   ["L", "Hide / show the file list", ["list", "l"]],
   ["D", "Toggle debug info (timings, stretch, memory)", ["debug", "d"]],
   ["E, Ctrl+S", "Export as PNG / JPEG (full resolution)", ["export", "e"]],

@@ -73,8 +73,6 @@ pub struct App {
     full_res: bool,
     show_info: bool,
     show_debug: bool,
-    /// File list shows the end of long names instead of the start.
-    show_name_end: bool,
     /// Graphics backend and adapter, for the debug panel.
     gpu_info: String,
     zoom: f32,
@@ -165,7 +163,6 @@ impl App {
             full_res: settings.max_side.is_none(),
             show_info: true,
             show_debug: false,
-            show_name_end: false,
             gpu_info: cc
                 .wgpu_render_state
                 .as_ref()
