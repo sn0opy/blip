@@ -9,9 +9,7 @@ export function initList() {
 }
 
 export function renderList(onSelect: (index: number) => void) {
-  const items = state.files.map((f, i) =>
-    el("li", { textContent: f.name, title: f.name, onclick: () => onSelect(i) }),
-  );
+  const items = state.files.map((f, i) => el("li", { textContent: f.name, title: f.name, onclick: () => onSelect(i) }));
   list.replaceChildren(...items);
   selectedItem = null;
   updateList();
