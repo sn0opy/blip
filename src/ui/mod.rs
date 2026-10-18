@@ -73,6 +73,8 @@ pub struct App {
 
     params: StretchParams,
     full_res: bool,
+    /// Crops of the corners, edges and center instead of the whole image.
+    mosaic: bool,
     show_info: bool,
     show_debug: bool,
     /// Graphics backend and adapter, for the debug panel.
@@ -164,6 +166,7 @@ impl App {
             tick: 0,
             params: settings.stretch,
             full_res: settings.max_side.is_none(),
+            mosaic: false,
             show_info: true,
             show_debug: false,
             gpu_info: cc
@@ -310,7 +313,7 @@ impl App {
                 auto_stretch: self.unstretched.as_deref() != Some(path),
                 ..self.params
             },
-            max_side: (!self.full_res).then_some(MAX_SIDE),
+            max_side: (!self.loads_full_res()).then_some(MAX_SIDE),
         }
     }
 
@@ -387,9 +390,13 @@ impl App {
         }
     }
 
+    fn loads_full_res(&self) -> bool {
+        self.full_res || self.mosaic
+    }
+
     /// Number of rendered images kept on the GPU.
     fn cache_limit(&self) -> usize {
-        if self.full_res {
+        if self.loads_full_res() {
             CACHE_SIZE_FULL
         } else {
             CACHE_SIZE

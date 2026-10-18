@@ -7,6 +7,8 @@ use std::time::Instant;
 
 /// On/off period of the clipped-pixel flash, in seconds.
 const FLASH_PERIOD: f64 = 0.8;
+/// Space between the mosaic panels, in points.
+const MOSAIC_GAP: f32 = 3.0;
 
 impl App {
     pub(super) fn file_list(&mut self, ui: &mut egui::Ui) {
@@ -98,7 +100,9 @@ impl App {
                     (self.selected_at.as_ref()).map(|(_, t)| t.elapsed().as_secs_f64() * 1000.0);
             }
         }
-        self.zoom_and_pan(ui, &response, rect);
+        if !self.mosaic {
+            self.zoom_and_pan(ui, &response, rect);
+        }
 
         let debug_general = self.show_debug.then(|| self.debug_general());
         let debug_pos = rect.right_top() + Vec2::new(-44.0, 8.0);
@@ -118,42 +122,54 @@ impl App {
             self.tick += 1;
             entry.last_used = self.tick;
             let loaded = &entry.loaded;
-            let size = Vec2::new(loaded.size[0] as f32, loaded.size[1] as f32);
-            let fit = (rect.width() / size.x).min(rect.height() / size.y);
-            let img_rect = Rect::from_center_size(rect.center() + self.pan, size * fit * self.zoom);
-            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-            painter.image(loaded.texture.id(), img_rect, uv, Color32::WHITE);
-
             let is_current = current.as_ref() == Some(path);
-            if is_current
-                && self.flash_clip.as_ref() == Some(path)
-                && let Some(overlay) = &loaded.clip_overlay
-            {
-                let phase = (ui.input(|i| i.time) / FLASH_PERIOD).fract();
-                let next_edge = if phase < 0.5 {
-                    0.5 - phase
-                } else {
-                    1.0 - phase
-                };
-                ui.ctx()
-                    .request_repaint_after_secs((next_edge * FLASH_PERIOD) as f32 + 0.001);
-                if phase < 0.5 {
+            let flash = loaded
+                .clip_overlay
+                .as_ref()
+                .filter(|_| is_current && self.flash_clip.as_ref() == Some(path))
+                .filter(|_| clip_flash_on(ui));
+            let stars = self.stars.get(path);
+
+            if self.mosaic {
+                let ppp = ui.ctx().pixels_per_point();
+                for panel in mosaic_panels(rect, ppp, loaded.size, loaded.src_size) {
+                    painter.image(loaded.texture.id(), panel.screen, panel.uv, Color32::WHITE);
+                    if let Some(overlay) = flash {
+                        let overlay_uv = Rect::from_min_max(
+                            overlay.uv.lerp_inside(panel.uv.min.to_vec2()),
+                            overlay.uv.lerp_inside(panel.uv.max.to_vec2()),
+                        );
+                        painter.image(
+                            overlay.texture.id(),
+                            panel.screen,
+                            overlay_uv,
+                            Color32::WHITE,
+                        );
+                    }
+                }
+            } else {
+                let size = Vec2::new(loaded.size[0] as f32, loaded.size[1] as f32);
+                let fit = (rect.width() / size.x).min(rect.height() / size.y);
+                let img_rect =
+                    Rect::from_center_size(rect.center() + self.pan, size * fit * self.zoom);
+                let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                painter.image(loaded.texture.id(), img_rect, uv, Color32::WHITE);
+                if let Some(overlay) = flash {
                     painter.image(overlay.texture.id(), img_rect, overlay.uv, Color32::WHITE);
                 }
-            }
 
-            let stars = self.stars.get(path);
-            if is_current
-                && self.star_view.as_ref() == Some(path)
-                && let Some(st) = stars
-            {
-                draw::stars(&painter, rect, img_rect, loaded.src_size, &st.stats);
-            }
-            if is_current
-                && self.tilt_view.as_ref() == Some(path)
-                && let Some(tilt) = stars.and_then(|s| s.tilt.as_ref())
-            {
-                draw::tilt(&painter, img_rect, loaded.src_size, tilt);
+                if is_current
+                    && self.star_view.as_ref() == Some(path)
+                    && let Some(st) = stars
+                {
+                    draw::stars(&painter, rect, img_rect, loaded.src_size, &st.stats);
+                }
+                if is_current
+                    && self.tilt_view.as_ref() == Some(path)
+                    && let Some(tilt) = stars.and_then(|s| s.tilt.as_ref())
+                {
+                    draw::tilt(&painter, img_rect, loaded.src_size, tilt);
+                }
             }
 
             if self.show_info {
@@ -309,6 +325,60 @@ impl App {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct MosaicPanel {
+    screen: Rect,
+    uv: Rect,
+}
+
+/// 3×3 square crops from the corners, edge midpoints and center, row-major, at one
+/// sensor pixel per physical screen pixel.
+fn mosaic_panels(
+    view: Rect,
+    ppp: f32,
+    texture_size: [usize; 2],
+    sensor_size: [usize; 2],
+) -> [MosaicPanel; 9] {
+    let snap = |points: f32| (points * ppp).round() / ppp;
+    let gap = snap(MOSAIC_GAP);
+    let side = snap((view.width().min(view.height()) - 2.0 * gap) / 3.0).max(1.0 / ppp);
+    let sensor_crop = (side * ppp).min(sensor_size[0].min(sensor_size[1]) as f32 / 3.0);
+
+    // Along one axis, for panel 0 (start), 1 (middle) or 2 (end): its screen position
+    // and UV range.
+    let axis = |i: usize, axis: usize| {
+        let margin = (view.size()[axis] - 3.0 * side - 2.0 * gap) / 2.0;
+        let texels = texture_size[axis] as f32;
+        let crop = sensor_crop * texels / sensor_size[axis] as f32;
+        let start = (i as f32 * (texels - crop) / 2.0)
+            .round()
+            .min(texels - crop);
+        let screen = snap(view.min[axis] + margin) + i as f32 * (side + gap);
+        (screen, start / texels, (start + crop) / texels)
+    };
+    std::array::from_fn(|i| {
+        let (x, u0, u1) = axis(i % 3, 0);
+        let (y, v0, v1) = axis(i / 3, 1);
+        MosaicPanel {
+            screen: Rect::from_min_size(Pos2::new(x, y), Vec2::splat(side)),
+            uv: Rect::from_min_max(Pos2::new(u0, v0), Pos2::new(u1, v1)),
+        }
+    })
+}
+
+/// Whether the clipped-pixel flash is in its visible half. Repaints at the next switch.
+fn clip_flash_on(ui: &egui::Ui) -> bool {
+    let phase = (ui.input(|i| i.time) / FLASH_PERIOD).fract();
+    let next_edge = if phase < 0.5 {
+        0.5 - phase
+    } else {
+        1.0 - phase
+    };
+    ui.ctx()
+        .request_repaint_after_secs((next_edge * FLASH_PERIOD) as f32 + 0.001);
+    phase < 0.5
+}
+
 /// Debug lines for the shown image: geometry, timings, stretch, saturation level.
 fn debug_image(
     entry: &CacheEntry,
@@ -427,4 +497,53 @@ fn info_text(
         ));
     }
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VIEW: Rect = Rect::from_min_max(Pos2::new(10.0, 0.0), Pos2::new(910.0, 600.0));
+    const PPP: f32 = 2.0;
+    const SENSOR: [usize; 2] = [6000, 4000];
+
+    #[test]
+    fn mosaic_crops_corners_edges_and_center() {
+        let panels = mosaic_panels(VIEW, PPP, SENSOR, SENSOR);
+        assert_eq!(panels[0].uv.min, Pos2::ZERO);
+        assert_eq!(panels[8].uv.max, Pos2::new(1.0, 1.0));
+        assert!((panels[4].uv.center() - Pos2::new(0.5, 0.5)).length() < 1e-3);
+    }
+
+    #[test]
+    fn mosaic_shows_one_texel_per_physical_pixel() {
+        let MosaicPanel { screen, uv } = mosaic_panels(VIEW, PPP, SENSOR, SENSOR)[0];
+        assert_eq!(screen.width() * PPP, uv.width() * SENSOR[0] as f32);
+        assert_eq!(screen.height() * PPP, uv.height() * SENSOR[1] as f32);
+    }
+
+    #[test]
+    fn mosaic_panels_are_centered_squares_inside_the_view() {
+        let panels = mosaic_panels(VIEW, PPP, SENSOR, SENSOR);
+        let (first, last) = (panels[0].screen, panels[8].screen);
+        assert!(VIEW.contains_rect(first.union(last)), "{first:?} {last:?}");
+        assert_eq!(first.width(), first.height());
+        assert!((panels[4].screen.center() - VIEW.center()).length() < 1.0);
+    }
+
+    #[test]
+    fn mosaic_of_binned_texture_crops_the_same_area() {
+        let binned_size = [1500, 1000];
+        let full = mosaic_panels(VIEW, PPP, SENSOR, SENSOR);
+        let binned = mosaic_panels(VIEW, PPP, binned_size, SENSOR);
+        let binned_texel = Vec2::new(1.0 / binned_size[0] as f32, 1.0 / binned_size[1] as f32);
+        for (b, f) in binned.iter().zip(&full) {
+            let offset = (b.uv.min - f.uv.min).abs();
+            assert!(
+                offset.x <= binned_texel.x && offset.y <= binned_texel.y,
+                "{b:?} {f:?}"
+            );
+            assert!((b.uv.size() - f.uv.size()).length() < 1e-6, "{b:?} {f:?}");
+        }
+    }
 }

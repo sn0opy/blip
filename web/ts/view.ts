@@ -3,6 +3,8 @@ import type { Tilt } from "./messages.js";
 import { current, state, type Entry } from "./state.js";
 
 const FLASH_PERIOD = 800;
+/** Space between the mosaic panels, in CSS pixels. */
+const MOSAIC_GAP = 3;
 
 export const canvas = $<HTMLCanvasElement>("canvas");
 const ctx = canvas.getContext("2d")!;
@@ -44,13 +46,19 @@ function draw() {
   const { shown } = state;
   if (!shown) return;
 
-  const r = imageRect(shown);
+  const isCurrent = current()?.name === shown.name;
+  const flash = isCurrent && state.flashClip === shown.name && !!shown.overlay && flashOn();
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
+  if (state.mosaic) {
+    drawMosaic(shown, dpr, flash);
+    return;
+  }
+  const r = imageRect(shown);
   ctx.drawImage(shown.image, r.x, r.y, r.w, r.h);
 
-  if (current()?.name !== shown.name) return;
-  if (state.flashClip === shown.name && shown.overlay) drawClipFlash(shown, r, dpr);
+  if (!isCurrent) return;
+  if (flash) drawClipFlash(shown, r, dpr);
   const stars = state.stars.get(shown.name);
   if (state.starView === shown.name && stars?.key === shown.key) drawStars(shown, r, stars.list);
   if (state.tiltView === shown.name && stars?.key === shown.key && stars.tilt) drawTilt(shown, r, stars.tilt);
@@ -63,16 +71,61 @@ function imageRect(shown: Entry): Rect {
   return { x: w / 2 + state.pan.x - iw / 2, y: h / 2 + state.pan.y - ih / 2, w: iw, h: ih };
 }
 
-function drawClipFlash(shown: Entry, r: Rect, dpr: number) {
-  const o = shown.overlay!;
+/** Whether the clipped-pixel flash is in its visible half. Redraws at the next switch. */
+function flashOn() {
   const phase = (performance.now() / FLASH_PERIOD) % 1;
-  if (phase < 0.5) {
-    const cell = (o.cell * r.w) / shown.width;
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(dpr * cell < 1 ? o.grown : o.plain, r.x, r.y, o.plain.width * cell, o.plain.height * cell);
-  }
   const nextEdge = (phase < 0.5 ? 0.5 : 1) - phase;
   flashTimer = setTimeout(scheduleDraw, nextEdge * FLASH_PERIOD + 1);
+  return phase < 0.5;
+}
+
+function drawClipFlash(shown: Entry, r: Rect, dpr: number) {
+  const o = shown.overlay!;
+  const cell = (o.cell * r.w) / shown.width;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(dpr * cell < 1 ? o.grown : o.plain, r.x, r.y, o.plain.width * cell, o.plain.height * cell);
+}
+
+function drawMosaic(shown: Entry, dpr: number, flash: boolean) {
+  for (const { image, screen } of mosaicPanels(shown, dpr)) {
+    ctx.drawImage(shown.image, image.x, image.y, image.w, image.h, screen.x, screen.y, screen.w, screen.h);
+    if (!flash) continue;
+    const o = shown.overlay!;
+    const [x, y, w, h] = [image.x, image.y, image.w, image.h].map((v) => v / o.cell);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(o.plain, x, y, w, h, screen.x, screen.y, screen.w, screen.h);
+    ctx.imageSmoothingEnabled = true;
+  }
+}
+
+/**
+ * 3×3 square crops from the corners, edge midpoints and center, row-major, at one
+ * sensor pixel per device pixel.
+ */
+function mosaicPanels(shown: Entry, dpr: number): { image: Rect; screen: Rect }[] {
+  const snap = (cssPixels: number) => Math.round(cssPixels * dpr) / dpr;
+  const gap = snap(MOSAIC_GAP);
+  const side = Math.max(1 / dpr, snap((Math.min(canvas.clientWidth, canvas.clientHeight) - 2 * gap) / 3));
+  const sensorCrop = Math.min(side * dpr, Math.min(shown.srcWidth, shown.srcHeight) / 3);
+
+  // Along one axis, for panel 0 (start), 1 (middle) or 2 (end): its screen position
+  // and the part of the image it shows.
+  const axis = (i: number, viewSize: number, imageSize: number, sensorSize: number) => {
+    const crop = (sensorCrop * imageSize) / sensorSize;
+    return {
+      screen: snap((viewSize - 3 * side - 2 * gap) / 2) + i * (side + gap),
+      image: Math.min(imageSize - crop, Math.round((i * (imageSize - crop)) / 2)),
+      crop,
+    };
+  };
+  return Array.from({ length: 9 }, (_, i) => {
+    const x = axis(i % 3, canvas.clientWidth, shown.width, shown.srcWidth);
+    const y = axis(Math.floor(i / 3), canvas.clientHeight, shown.height, shown.srcHeight);
+    return {
+      image: { x: x.image, y: y.image, w: x.crop, h: y.crop },
+      screen: { x: x.screen, y: y.screen, w: side, h: side },
+    };
+  });
 }
 
 function drawStars(shown: Entry, r: Rect, list: Float32Array) {

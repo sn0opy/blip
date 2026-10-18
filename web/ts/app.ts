@@ -86,6 +86,12 @@ export function toggleFullRes() {
   changed();
 }
 
+export function toggleMosaic() {
+  state.mosaic = !state.mosaic;
+  setStatus(`Corner mosaic ${state.mosaic ? "on" : "off"} (G to toggle)`, 2000);
+  changed();
+}
+
 export function toggleClipFlash() {
   const cur = current();
   if (!cur) return;
@@ -149,6 +155,7 @@ export function updateToolbar() {
     stretch: state.unstretched !== cur,
     neutralize: state.neutralize,
     fullRes: state.fullRes,
+    mosaic: state.mosaic,
   };
   for (const button of $("#toolbar").querySelectorAll<HTMLElement>("[data-action]")) {
     const value = pressed[button.dataset.action!];

@@ -33,6 +33,7 @@ cargo build --release
 | <kbd>C</kbd> | Toggle flashing clipped pixels on this image |
 | <kbd>S</kbd> | Toggle star sizes (HFR) on this image |
 | <kbd>T</kbd> | Toggle sensor tilt (corner HFR) on this image |
+| <kbd>G</kbd> | Toggle corner mosaic (aberration inspection) |
 | <kbd>B</kbd> | Toggle binned preview / full resolution |
 | <kbd>N</kbd> | Toggle background neutralization (white balance) |
 | <kbd>I</kbd> | Toggle info overlay |

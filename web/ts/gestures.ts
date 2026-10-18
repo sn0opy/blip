@@ -14,6 +14,8 @@ let lastTap = 0;
 const midpoint = (a: Point, b: Point) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y) || 1;
 const useTouch = () => document.body.classList.add("touch");
+const zoomable = () => !state.mosaic;
+const zoomedIn = () => zoomable() && state.zoom > 1;
 
 export function initGestures() {
   if (matchMedia("(pointer: coarse)").matches) useTouch();
@@ -29,6 +31,7 @@ export function initGestures() {
 
 function onWheel(e: WheelEvent) {
   e.preventDefault();
+  if (!zoomable()) return;
   const delta = e.deltaY * [1, 16, 400][e.deltaMode];
   // Trackpad pinch arrives as a wheel event with ctrlKey.
   zoomBy(Math.exp(-delta / (e.ctrlKey ? 100 : 200)), { x: e.clientX, y: e.clientY });
@@ -46,12 +49,12 @@ function onPointerMove(e: PointerEvent) {
   const p = pointers.get(e.pointerId);
   if (!p) return;
   const now = { x: e.clientX, y: e.clientY };
-  if (pointers.size === 2) {
+  if (pointers.size === 2 && zoomable()) {
     const other = [...pointers.values()].find((q) => q !== p)!;
     const before = midpoint(p, other);
     const after = midpoint(now, other);
     zoomBy(distance(now, other) / distance(p, other), after, { x: after.x - before.x, y: after.y - before.y });
-  } else if (pointers.size === 1 && state.zoom > 1) {
+  } else if (pointers.size === 1 && zoomedIn()) {
     state.pan.x += now.x - p.x;
     state.pan.y += now.y - p.y;
     scheduleDraw();
@@ -65,7 +68,7 @@ function onPointerEnd(e: PointerEvent) {
   gesture = null;
   if (e.type === "pointercancel" || !g.touch || g.multi) return;
   const [dx, dy] = [e.clientX - g.x, e.clientY - g.y];
-  if (state.zoom <= 1 && Math.abs(dx) > 50 && Math.abs(dx) > 1.5 * Math.abs(dy)) return run(dx < 0 ? "next" : "prev");
+  if (!zoomedIn() && Math.abs(dx) > 50 && Math.abs(dx) > 1.5 * Math.abs(dy)) return run(dx < 0 ? "next" : "prev");
   if (Math.hypot(dx, dy) > 10) return;
   const t = performance.now();
   if (t - lastTap < 300) {

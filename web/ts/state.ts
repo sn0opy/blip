@@ -38,6 +38,7 @@ export const state = {
 
   neutralize: true,
   fullRes: false,
+  mosaic: false,
   unstretched: null as string | null,
   showInfo: true,
   showDebug: false,
@@ -54,7 +55,7 @@ export const current = (): FileEntry | undefined => state.files[state.selected];
 
 export function settingsFor(name: string): Settings {
   return {
-    maxSide: state.fullRes ? null : MAX_SIDE,
+    maxSide: loadsFullRes() ? null : MAX_SIDE,
     neutralize: state.neutralize,
     autoStretch: state.unstretched !== name,
   };
@@ -73,7 +74,9 @@ export function needsStars(name: string) {
   return !!entry && state.stars.get(name)?.key !== entry.key && !state.starsFailed.has(entry.key);
 }
 
-export const cacheLimit = () => (state.fullRes ? CACHE_SIZE_FULL : CACHE_SIZE);
+const loadsFullRes = () => state.fullRes || state.mosaic;
+
+export const cacheLimit = () => (loadsFullRes() ? CACHE_SIZE_FULL : CACHE_SIZE);
 
 export function offsets() {
   const d = state.direction;

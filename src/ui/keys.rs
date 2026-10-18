@@ -63,7 +63,11 @@ impl App {
         if pressed(Key::T) {
             self.toggle_tilt_view();
         }
+        if pressed(Key::G) {
+            self.toggle_mosaic();
+        }
         if pressed(Key::B) {
+            let was_full = self.loads_full_res();
             self.full_res = !self.full_res;
             let mode = if self.full_res {
                 "Full resolution"
@@ -71,7 +75,9 @@ impl App {
                 "Binned preview"
             };
             self.set_status(format!("{mode} (B to toggle)"), Some(2.0));
-            self.reload_all();
+            if self.loads_full_res() != was_full {
+                self.reload_all();
+            }
         }
         if pressed(Key::Num0) || pressed(Key::F) {
             self.zoom = 1.0;
@@ -122,5 +128,15 @@ impl App {
             self.set_status("Not enough stars to measure tilt".into(), Some(2.5));
         }
         self.tilt_view = Some(cur);
+    }
+
+    fn toggle_mosaic(&mut self) {
+        let was_full = self.loads_full_res();
+        self.mosaic = !self.mosaic;
+        let state = if self.mosaic { "on" } else { "off" };
+        self.set_status(format!("Corner mosaic {state} (G to toggle)"), Some(2.0));
+        if self.loads_full_res() != was_full {
+            self.reload_all();
+        }
     }
 }
