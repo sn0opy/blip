@@ -17,6 +17,7 @@
 use super::panic_message;
 use super::texture::{self, Filter, Level, Overlay, Texture, Uploader};
 use blip_core::stars::StarStats;
+use blip_core::tilt::Tilt;
 use blip_core::{image, process, stars};
 use eframe::egui::{self, Pos2, Rect};
 use std::collections::VecDeque;
@@ -73,8 +74,8 @@ pub struct ClipOverlay {
 
 pub enum Message {
     Image(PathBuf, Settings, Result<Box<Loaded>, String>),
-    /// Star sizes and how long measuring took (ms).
-    Stars(PathBuf, StarStats, f64),
+    /// Star sizes, the tilt they show and how long measuring took (ms).
+    Stars(PathBuf, StarStats, Option<Tilt>, f64),
 }
 
 /// What a worker is busy with.
@@ -370,7 +371,7 @@ impl Worker {
                 Some(raw) => (raw.img, raw.clip),
                 None => {
                     let Ok(img) = image::read_file(&path) else {
-                        return Some((StarStats::default(), 0.0));
+                        return Some((StarStats::default(), None, 0.0));
                     };
                     let clip = process::clip_stats(&img);
                     (img, clip)
@@ -381,13 +382,14 @@ impl Worker {
             }
             let t = Instant::now();
             let stars = stars::detect(&img, &clip);
-            Some((stars, t.elapsed().as_secs_f64() * 1000.0))
+            let tilt = Tilt::measure(&stars.stars, img.width, img.height);
+            Some((stars, tilt, t.elapsed().as_secs_f64() * 1000.0))
         }))
-        .unwrap_or_else(|_| Some((StarStats::default(), 0.0)));
+        .unwrap_or_else(|_| Some((StarStats::default(), None, 0.0)));
 
         self.shared.lock().working[self.id] = None;
-        let (stats, ms) = result?;
-        Some(Message::Stars(path, stats, ms))
+        let (stats, tilt, ms) = result?;
+        Some(Message::Stars(path, stats, tilt, ms))
     }
 }
 

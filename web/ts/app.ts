@@ -104,6 +104,19 @@ export function toggleStars() {
   scheduleDraw();
 }
 
+export function toggleTilt() {
+  const cur = current();
+  if (!cur) return;
+  if (state.tiltView === cur.name) {
+    state.tiltView = null;
+  } else {
+    const stars = state.stars.get(cur.name);
+    if (stars && stars.key === valid(cur.name)?.key && !stars.tilt) setStatus("Not enough stars to measure tilt", 2500);
+    state.tiltView = cur.name;
+  }
+  scheduleDraw();
+}
+
 export function updateText() {
   const cur = current();
   const { shown } = state;
@@ -131,6 +144,7 @@ export function updateToolbar() {
     info: state.showInfo,
     debug: state.showDebug,
     stars: !!cur && state.starView === cur,
+    tilt: !!cur && state.tiltView === cur,
     clip: !!cur && state.flashClip === cur,
     stretch: state.unstretched !== cur,
     neutralize: state.neutralize,

@@ -1,7 +1,6 @@
 use super::loader::Work;
 use super::{App, CacheEntry, MeasuredStars, STATUS_FADE, draw, file_name};
 use blip_core::process::StretchParams;
-use blip_core::stars::StarStats;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -150,9 +149,15 @@ impl App {
             {
                 draw::stars(&painter, rect, img_rect, loaded.src_size, &st.stats);
             }
+            if is_current
+                && self.tilt_view.as_ref() == Some(path)
+                && let Some(tilt) = stars.and_then(|s| s.tilt.as_ref())
+            {
+                draw::tilt(&painter, img_rect, loaded.src_size, tilt);
+            }
 
             if self.show_info {
-                let text = info_text(path, entry, stars.map(|s| &s.stats), params);
+                let text = info_text(path, entry, stars, params);
                 draw::text_box(&painter, rect.left_top() + Vec2::new(10.0, 8.0), &text, 1.0);
             }
             if let Some(general) = &debug_general {
@@ -380,7 +385,7 @@ fn debug_image(
 fn info_text(
     path: &Path,
     entry: &CacheEntry,
-    stars: Option<&StarStats>,
+    stars: Option<&MeasuredStars>,
     params: StretchParams,
 ) -> String {
     let l = &entry.loaded;
@@ -402,7 +407,7 @@ fn info_text(
             pct(c.bright)
         ));
     }
-    match stars {
+    match stars.map(|s| &s.stats) {
         Some(st) if !st.stars.is_empty() => lines.push(format!(
             "stars: {} · HFR median {:.2} px · mean {:.2} px",
             draw::thousands(st.stars.len() as u64),
@@ -411,6 +416,15 @@ fn info_text(
         )),
         Some(_) => lines.push("stars: none found".into()),
         None => lines.push("stars: measuring…".into()),
+    }
+    if let Some(t) = stars.and_then(|s| s.tilt.as_ref()) {
+        lines.push(format!(
+            "tilt: {:.2} px ({:.0}%) · corners {:.2} px · center {:.2} px",
+            t.spread(),
+            t.percent(),
+            t.corner_mean(),
+            t.center
+        ));
     }
     lines.join("\n")
 }

@@ -112,7 +112,15 @@ function measureStars(id: number, { key, decoded }: Loaded) {
   const s = decoded.stars();
   const ms = performance.now() - t;
   const list = s.list as Float32Array<ArrayBuffer>;
-  reply({ type: "stars", id, stars: { key, list, median: s.median_hfr, mean: s.mean_hfr, ms } }, [list.buffer]);
+  const info = s.tilt;
+  let tilt = null;
+  if (info) {
+    const c = info.corners;
+    const corners = [0, 3, 6, 9].map((i) => ({ x: c[i], y: c[i + 1], hfr: c[i + 2] }));
+    tilt = { corners, center: info.center, spread: info.spread, percent: info.percent, mean: info.mean };
+    info.free();
+  }
+  reply({ type: "stars", id, stars: { key, list, tilt, median: s.median_hfr, mean: s.mean_hfr, ms } }, [list.buffer]);
   s.free();
 }
 

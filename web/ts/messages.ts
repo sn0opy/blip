@@ -60,9 +60,19 @@ export interface Rendered {
   timings: Timings;
 }
 
+export interface Tilt {
+  /** Clockwise from top left, in sensor pixels. */
+  corners: { x: number; y: number; hfr: number }[];
+  center: number;
+  spread: number;
+  percent: number;
+  mean: number;
+}
+
 export interface Stars {
   key: string;
   list: Float32Array<ArrayBuffer>;
+  tilt: Tilt | null;
   median: number;
   mean: number;
   ms: number;

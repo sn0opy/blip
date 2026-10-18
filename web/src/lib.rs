@@ -3,7 +3,7 @@
 
 use blip_core::overlay::{self, ClipMap};
 use blip_core::process::{self, ClipStats, Rgba8, StretchParams};
-use blip_core::{export, image, stars};
+use blip_core::{export, image, stars, tilt::Tilt};
 use wasm_bindgen::prelude::*;
 
 /// "Full resolution" falls back to binning above this long side, like the desktop app
@@ -100,10 +100,21 @@ impl Decoded {
     /// Star centroids and half-flux radii in sensor pixels.
     pub fn stars(&self) -> Stars {
         let s = stars::detect(&self.img, &self.clip);
+        let (w, h) = (self.img.width, self.img.height);
+        let tilt = Tilt::measure(&s.stars, w, h).map(|t| TiltInfo {
+            center: t.center,
+            spread: t.spread(),
+            percent: t.percent(),
+            mean: t.corner_mean(),
+            corners: (t.polygon(w, h).into_iter().zip(t.corners))
+                .flat_map(|((x, y), hfr)| [x, y, hfr])
+                .collect(),
+        });
         Stars {
             median_hfr: s.median_hfr,
             mean_hfr: s.mean_hfr,
             list: s.stars.iter().flat_map(|s| [s.x, s.y, s.hfr]).collect(),
+            tilt,
         }
     }
 
@@ -231,6 +242,7 @@ pub struct Stars {
     #[wasm_bindgen(readonly)]
     pub mean_hfr: f32,
     list: Vec<f32>,
+    tilt: Option<TiltInfo>,
 }
 
 #[wasm_bindgen]
@@ -239,5 +251,34 @@ impl Stars {
     #[wasm_bindgen(getter)]
     pub fn list(&self) -> Vec<f32> {
         self.list.clone()
+    }
+
+    /// `undefined` with too few stars.
+    #[wasm_bindgen(getter)]
+    pub fn tilt(&self) -> Option<TiltInfo> {
+        self.tilt.clone()
+    }
+}
+
+#[wasm_bindgen]
+#[derive(Clone)]
+pub struct TiltInfo {
+    #[wasm_bindgen(readonly)]
+    pub center: f32,
+    #[wasm_bindgen(readonly)]
+    pub spread: f32,
+    #[wasm_bindgen(readonly)]
+    pub percent: f32,
+    #[wasm_bindgen(readonly)]
+    pub mean: f32,
+    corners: Vec<f32>,
+}
+
+#[wasm_bindgen]
+impl TiltInfo {
+    /// The drawn corners as `[x, y, hfr, …]`, clockwise from top left.
+    #[wasm_bindgen(getter)]
+    pub fn corners(&self) -> Vec<f32> {
+        self.corners.clone()
     }
 }

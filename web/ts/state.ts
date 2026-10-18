@@ -45,6 +45,7 @@ export const state = {
   pan: { x: 0, y: 0 },
   flashClip: null as string | null,
   starView: null as string | null,
+  tiltView: null as string | null,
 };
 
 export const isImage = (name: string) => EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext));

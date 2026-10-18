@@ -16,6 +16,14 @@ export function infoText(s: Entry) {
     lines.push(`clipped: dark ${clipped(dark)} · bright ${clipped(bright)}`);
   }
   lines.push(`stars: ${starsText(s)}`);
+  const stars = state.stars.get(s.name);
+  const tilt = stars?.key === s.key && stars.tilt;
+  if (tilt) {
+    const px = (n: number) => `${n.toFixed(2)} px`;
+    lines.push(
+      `tilt: ${px(tilt.spread)} (${tilt.percent.toFixed(0)}%) · corners ${px(tilt.mean)} · center ${px(tilt.center)}`,
+    );
+  }
   return lines.join("\n");
 }
 

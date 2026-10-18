@@ -1,4 +1,5 @@
 import { $ } from "./dom.js";
+import type { Tilt } from "./messages.js";
 import { current, state, type Entry } from "./state.js";
 
 const FLASH_PERIOD = 800;
@@ -52,6 +53,7 @@ function draw() {
   if (state.flashClip === shown.name && shown.overlay) drawClipFlash(shown, r, dpr);
   const stars = state.stars.get(shown.name);
   if (state.starView === shown.name && stars?.key === shown.key) drawStars(shown, r, stars.list);
+  if (state.tiltView === shown.name && stars?.key === shown.key && stars.tilt) drawTilt(shown, r, stars.tilt);
 }
 
 function imageRect(shown: Entry): Rect {
@@ -92,6 +94,42 @@ function drawStars(shown: Entry, r: Rect, list: Float32Array) {
     ctx.stroke();
     ctx.fillText(hfr.toFixed(2), x, y - radius - 1);
   }
+}
+
+/** The tilt polygon with its diagonals, labeled with the corner and center HFRs. */
+function drawTilt(shown: Entry, r: Rect, tilt: Tilt) {
+  const scale = r.w / shown.srcWidth;
+  const color = "rgb(70 230 70)";
+  const pts = tilt.corners.map((c) => ({ x: r.x + c.x * scale, y: r.y + c.y * scale, hfr: c.hfr }));
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (const p of pts) ctx.lineTo(p.x, p.y);
+  ctx.closePath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  ctx.lineTo(pts[2].x, pts[2].y);
+  ctx.moveTo(pts[1].x, pts[1].y);
+  ctx.lineTo(pts[3].x, pts[3].y);
+  ctx.stroke();
+
+  ctx.font = "13px system-ui, sans-serif";
+  const label = (x: number, y: number, hfr: number) => {
+    ctx.fillStyle = "rgb(0 0 0 / 0.8)";
+    ctx.fillText(hfr.toFixed(2), x + 1, y + 1);
+    ctx.fillStyle = color;
+    ctx.fillText(hfr.toFixed(2), x, y);
+  };
+  const [cx, cy] = [r.x + r.w / 2, r.y + r.h / 2];
+  // Each label goes on the outer side of its corner.
+  for (const p of pts) {
+    const [sx, sy] = [Math.sign(p.x - cx), Math.sign(p.y - cy)];
+    ctx.textAlign = sx < 0 ? "right" : "left";
+    ctx.textBaseline = sy < 0 ? "bottom" : "top";
+    label(p.x + 4 * sx, p.y + 4 * sy, p.hfr);
+  }
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  label(cx + 8, cy, tilt.center);
 }
 
 export function resetZoom() {

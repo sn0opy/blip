@@ -14,6 +14,7 @@ pub use loader::{Loader, Preloader};
 
 use blip_core::process::StretchParams;
 use blip_core::stars::StarStats;
+use blip_core::tilt::Tilt;
 use eframe::egui::{self, Vec2};
 use loader::{Loaded, Message, Settings};
 use std::any::Any;
@@ -40,6 +41,7 @@ struct Status {
 
 struct MeasuredStars {
     stats: StarStats,
+    tilt: Option<Tilt>,
     ms: f64,
 }
 
@@ -80,6 +82,7 @@ pub struct App {
     /// Per-image overlays: switching images turns them off.
     flash_clip: Option<PathBuf>,
     star_view: Option<PathBuf>,
+    tilt_view: Option<PathBuf>,
     /// Shown without the auto stretch.
     unstretched: Option<PathBuf>,
     /// Star measurements, computed by the loader for every image.
@@ -175,6 +178,7 @@ impl App {
             pan: Vec2::ZERO,
             flash_clip: None,
             star_view: None,
+            tilt_view: None,
             unstretched: None,
             stars: HashMap::new(),
             confirm_delete: None,
@@ -365,8 +369,8 @@ impl App {
                         }
                     }
                 }
-                Message::Stars(path, stats, ms) if self.files.contains(&path) => {
-                    self.stars.insert(path, MeasuredStars { stats, ms });
+                Message::Stars(path, stats, tilt, ms) if self.files.contains(&path) => {
+                    self.stars.insert(path, MeasuredStars { stats, tilt, ms });
                 }
                 _ => {}
             }

@@ -60,6 +60,9 @@ impl App {
         if pressed(Key::S) {
             self.toggle_star_view();
         }
+        if pressed(Key::T) {
+            self.toggle_tilt_view();
+        }
         if pressed(Key::B) {
             self.full_res = !self.full_res;
             let mode = if self.full_res {
@@ -106,5 +109,18 @@ impl App {
         } else {
             cur
         };
+    }
+
+    fn toggle_tilt_view(&mut self) {
+        let cur = self.current().cloned();
+        if self.tilt_view.is_some() && self.tilt_view == cur {
+            self.tilt_view = None;
+            return;
+        }
+        let Some(cur) = cur else { return };
+        if self.stars.get(&cur).is_some_and(|s| s.tilt.is_none()) {
+            self.set_status("Not enough stars to measure tilt".into(), Some(2.5));
+        }
+        self.tilt_view = Some(cur);
     }
 }

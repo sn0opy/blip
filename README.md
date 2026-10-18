@@ -22,24 +22,28 @@ cargo build --release
 
 | Key | Action |
 | --- | --- |
-| <kbd>↓</kbd>, <kbd>→</kbd>, <kbd>Space</kbd> or <kbd>J</kbd> | next image |
-| <kbd>↑</kbd>, <kbd>←</kbd> or <kbd>K</kbd> | previous image |
-| <kbd>PgDn</kbd> / <kbd>PgUp</kbd> | jump 10 images forward / back |
-| <kbd>Home</kbd> / <kbd>End</kbd> | jump to the first / last image |
-| <kbd>Delete</kbd> or <kbd>Backspace</kbd> | permanently delete the file, bypassing the recycle bin (asks first) |
-| Mouse wheel / drag / double-click | zoom / pan / reset (zoom is kept while blinking) |
-| <kbd>F</kbd> or <kbd>0</kbd> | reset zoom |
-| <kbd>I</kbd> | toggle the info overlay (capture details, star size, clipping stats) |
-| <kbd>D</kbd> | toggle the debug panel (timings, stretch values, cache, GPU) |
-| <kbd>N</kbd> | toggle background neutralization (auto white balance) |
-| <kbd>S</kbd> | toggle the measured star sizes (HFR) on the current image |
-| <kbd>B</kbd> | toggle binned preview / full resolution |
-| <kbd>A</kbd> | toggle auto stretch for the current image (off shows the data linearly) |
-| <kbd>C</kbd> | toggle flashing clipped pixels on the current image (red = saturated, blue = black) |
-| <kbd>F5</kbd> or <kbd>Ctrl</kbd>+<kbd>R</kbd> (<kbd>Cmd</kbd>+<kbd>R</kbd> on macOS) | rescan the folder |
-| <kbd>O</kbd> or <kbd>Ctrl</kbd>+<kbd>O</kbd> (<kbd>Cmd</kbd>+<kbd>O</kbd> on macOS) | open a folder (or drag a folder or FITS / XISF file onto the window) |
-| <kbd>?</kbd> or <kbd>F1</kbd> | show all shortcuts |
-| <kbd>E</kbd> or <kbd>Ctrl</kbd>+<kbd>S</kbd> (<kbd>Cmd</kbd>+<kbd>S</kbd> on macOS) | export the stretched image (full resolution) as PNG or JPEG |
+| <kbd>↓</kbd>, <kbd>→</kbd>, <kbd>Space</kbd> or <kbd>J</kbd> | Next image |
+| <kbd>↑</kbd>, <kbd>←</kbd> or <kbd>K</kbd> | Previous image |
+| <kbd>PgDn</kbd> / <kbd>PgUp</kbd> | Jump 10 images |
+| <kbd>Home</kbd> / <kbd>End</kbd> | First / last image |
+| <kbd>Delete</kbd> or <kbd>Backspace</kbd> | Delete file permanently (asks first) |
+| Wheel / drag | Zoom / pan (kept while blinking) |
+| Double-click, <kbd>F</kbd> or <kbd>0</kbd> | Reset zoom |
+| <kbd>A</kbd> | Toggle auto stretch for this image |
+| <kbd>C</kbd> | Toggle flashing clipped pixels on this image |
+| <kbd>S</kbd> | Toggle star sizes (HFR) on this image |
+| <kbd>T</kbd> | Toggle sensor tilt (corner HFR) on this image |
+| <kbd>B</kbd> | Toggle binned preview / full resolution |
+| <kbd>N</kbd> | Toggle background neutralization (white balance) |
+| <kbd>I</kbd> | Toggle info overlay |
+| <kbd>D</kbd> | Toggle debug info (timings, stretch, cache, GPU) |
+| <kbd>E</kbd> or <kbd>Ctrl</kbd>+<kbd>S</kbd> | Export as PNG / JPEG (full resolution) |
+| <kbd>O</kbd> or <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open folder |
+| <kbd>F5</kbd> or <kbd>Ctrl</kbd>+<kbd>R</kbd> | Rescan folder |
+| <kbd>?</kbd> or <kbd>F1</kbd> | This help |
+
+On macOS, use <kbd>Cmd</kbd> instead of <kbd>Ctrl</kbd>. A folder or FITS / XISF file can also be
+dropped onto the window to open it.
 
 ## License
 
