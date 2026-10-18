@@ -13,8 +13,10 @@ pub use gpu::wgpu_options;
 pub use loader::{Loader, Preloader};
 
 use blip_core::process::StretchParams;
+use blip_core::solve::Solution;
 use blip_core::stars::StarStats;
 use blip_core::tilt::Tilt;
+use blip_core::wcs::Wcs;
 use eframe::egui::{self, Vec2};
 use loader::{Loaded, Message, Settings};
 use std::any::Any;
@@ -39,10 +41,24 @@ struct Status {
     ttl: Option<f32>,
 }
 
-struct MeasuredStars {
+pub struct MeasuredStars {
     stats: StarStats,
     tilt: Option<Tilt>,
-    ms: f64,
+    detect_ms: f64,
+    solution: Result<Solution, String>,
+    header_wcs: Option<Wcs>,
+}
+
+impl MeasuredStars {
+    fn failed(reason: &str) -> Self {
+        Self {
+            stats: StarStats::default(),
+            tilt: None,
+            detect_ms: 0.0,
+            solution: Err(reason.to_string()),
+            header_wcs: None,
+        }
+    }
 }
 
 struct CacheEntry {
@@ -85,6 +101,7 @@ pub struct App {
     flash_clip: Option<PathBuf>,
     star_view: Option<PathBuf>,
     tilt_view: Option<PathBuf>,
+    sky_view: Option<PathBuf>,
     /// Shown without the auto stretch.
     unstretched: Option<PathBuf>,
     /// Star measurements, computed by the loader for every image.
@@ -182,6 +199,7 @@ impl App {
             flash_clip: None,
             star_view: None,
             tilt_view: None,
+            sky_view: None,
             unstretched: None,
             stars: HashMap::new(),
             confirm_delete: None,
@@ -372,8 +390,8 @@ impl App {
                         }
                     }
                 }
-                Message::Stars(path, stats, tilt, ms) if self.files.contains(&path) => {
-                    self.stars.insert(path, MeasuredStars { stats, tilt, ms });
+                Message::Stars(path, measured) if self.files.contains(&path) => {
+                    self.stars.insert(path, *measured);
                 }
                 _ => {}
             }

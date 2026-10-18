@@ -8,7 +8,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-blip-core = { path = "crates/blip-core" }
+blip-core = { path = "crates/blip-core", features = ["solve"] }
 bytemuck.workspace = true
 eframe = { version = "0.37.0", default-features = false, features = [
     "wgpu",

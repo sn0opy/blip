@@ -1,6 +1,7 @@
 use super::loader::Work;
 use super::{App, CacheEntry, MeasuredStars, STATUS_FADE, draw, file_name};
 use blip_core::process::StretchParams;
+use blip_core::wcs;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -169,6 +170,12 @@ impl App {
                     && let Some(tilt) = stars.and_then(|s| s.tilt.as_ref())
                 {
                     draw::tilt(&painter, img_rect, loaded.src_size, tilt);
+                }
+                if is_current
+                    && self.sky_view.as_ref() == Some(path)
+                    && let Some(Ok(sol)) = stars.map(|s| &s.solution)
+                {
+                    draw::sky(&painter, rect, img_rect, loaded.src_size, &sol.wcs);
                 }
             }
 
@@ -393,7 +400,7 @@ fn debug_image(
         format!("bin {}", l.bin)
     };
     let pattern = l.bayer.map(|b| format!(" {b}")).unwrap_or_default();
-    let star_ms = stars.map_or("…".to_string(), |s| format!("{:.0} ms", s.ms));
+    let star_ms = stars.map_or("…".to_string(), |s| format!("{:.0} ms", s.detect_ms));
     let channels: &[&str] = if l.stretch.medians.len() == 3 {
         &["R", "G", "B"]
     } else {
@@ -448,8 +455,43 @@ fn debug_image(
             )
         },
         format!("saturation level {} ADU", l.clip.bright_level),
+        stars.map_or("plate solve …".to_string(), |s| {
+            debug_solve(s, l.src_size)
+        }),
     ]
     .join("\n")
+}
+
+fn debug_solve(s: &MeasuredStars, size: [usize; 2]) -> String {
+    let Ok(sol) = &s.solution else {
+        return "plate solve failed".into();
+    };
+    let mut text = format!(
+        "plate solve {:.0} ms · {} points · {} tiles · {:.2}° from header position",
+        sol.ms,
+        s.stats.points_brightest_first.len(),
+        sol.tiles_tried,
+        sol.hint_offset_deg
+    );
+    if let Some(h) = &s.header_wcs {
+        let (w, hgt) = (size[0] as f64 - 1.0, size[1] as f64 - 1.0);
+        let worst = [
+            (0.0, 0.0),
+            (w, 0.0),
+            (0.0, hgt),
+            (w, hgt),
+            (w / 2.0, hgt / 2.0),
+        ]
+        .iter()
+        .map(|&(x, y)| {
+            let (a, b) = sol.wcs.pixel_to_sky(x, y);
+            let (c, d) = h.pixel_to_sky(x, y);
+            wcs::separation(a, b, c, d) * 3600.0
+        })
+        .fold(0.0, f64::max);
+        text += &format!(" · header WCS (linear) up to {worst:.1}″ off");
+    }
+    text
 }
 
 fn info_text(
@@ -486,6 +528,28 @@ fn info_text(
         )),
         Some(_) => lines.push("stars: none found".into()),
         None => lines.push("stars: measuring…".into()),
+    }
+    match stars.map(|s| &s.solution) {
+        Some(Ok(sol)) => {
+            let w = &sol.wcs;
+            let [sw, sh] = l.src_size;
+            let (ra, dec) = w.pixel_to_sky(sw as f64 / 2.0, sh as f64 / 2.0);
+            let fov = |px: usize| px as f64 * w.arcsec_per_px() / 3600.0;
+            lines.push(format!(
+                "solved: {} {} · {:.2}″/px · {:.2}°×{:.2}° · north {:.0}° CW{} · {} stars · rms {:.2}″",
+                draw::format_ra(ra, 0.0),
+                draw::format_dec(dec, 0.0),
+                w.arcsec_per_px(),
+                fov(sw),
+                fov(sh),
+                w.north_clockwise_from_up(),
+                if w.mirrored() { " · mirrored" } else { "" },
+                sol.matched_stars,
+                sol.rms_arcsec
+            ));
+        }
+        Some(Err(e)) => lines.push(format!("plate solve failed: {e}")),
+        None => lines.push("plate solving…".into()),
     }
     if let Some(t) = stars.and_then(|s| s.tilt.as_ref()) {
         lines.push(format!(

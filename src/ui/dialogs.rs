@@ -13,6 +13,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("C", "Toggle flashing clipped pixels on this image"),
     ("S", "Toggle star sizes (HFR) on this image"),
     ("T", "Toggle sensor tilt (corner HFR) on this image"),
+    ("P", "Toggle plate solve annotation on this image"),
     ("G", "Toggle corner mosaic (aberration inspection)"),
     ("B", "Toggle binned preview / full resolution"),
     ("N", "Toggle background neutralization (white balance)"),
