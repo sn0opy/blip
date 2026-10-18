@@ -330,6 +330,10 @@ fn measure(
         }
         x0 = (sx / sf) as f32;
         y0 = (sy / sf) as f32;
+        // The centroid can move by up to the radius: stay inside the image.
+        if !in_bounds(x0, y0, radius) {
+            return None;
+        }
 
         // HFR = flux-weighted mean distance from the centroid.
         let (mut sr, mut sf) = (0.0f64, 0.0f64);
