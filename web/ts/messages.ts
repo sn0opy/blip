@@ -2,6 +2,7 @@ export interface Settings {
   maxSide: number | null;
   neutralize: boolean;
   autoStretch: boolean;
+  boost: number;
 }
 
 interface Job {

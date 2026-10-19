@@ -88,6 +88,8 @@ pub struct App {
     tick: u64,
 
     params: StretchParams,
+    /// Steps by which the stretch's target background is raised (`StretchParams::boosted`).
+    boost: u32,
     full_res: bool,
     /// Crops of the corners, edges and center instead of the whole image.
     mosaic: bool,
@@ -182,6 +184,7 @@ impl App {
             stale: None,
             tick: 0,
             params: settings.stretch,
+            boost: 0,
             full_res: settings.max_side.is_none(),
             mosaic: false,
             show_info: true,
@@ -329,7 +332,7 @@ impl App {
         Settings {
             stretch: StretchParams {
                 auto_stretch: self.unstretched.as_deref() != Some(path),
-                ..self.params
+                ..self.params.boosted(self.boost)
             },
             max_side: (!self.loads_full_res()).then_some(MAX_SIDE),
         }

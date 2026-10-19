@@ -27,12 +27,13 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, String> {
     Ok(Decoded { img, clip })
 }
 
-fn params(neutralize: bool, auto_stretch: bool) -> StretchParams {
+fn params(neutralize: bool, auto_stretch: bool, boost: u32) -> StretchParams {
     StretchParams {
         neutralize,
         auto_stretch,
         ..Default::default()
     }
+    .boosted(boost)
 }
 
 #[wasm_bindgen]
@@ -71,14 +72,16 @@ impl Decoded {
     }
 
     /// Stretched RGBA image binned to a long side of at most `max_side`, or at full
-    /// resolution without it, plus its clipped-pixel overlay.
+    /// resolution without it, plus its clipped-pixel overlay. `boost` raises the target
+    /// background (`StretchParams::boosted`).
     pub fn render(
         &self,
         max_side: Option<usize>,
         neutralize: bool,
         auto_stretch: bool,
+        boost: u32,
     ) -> Rendered {
-        let params = params(neutralize, auto_stretch);
+        let params = params(neutralize, auto_stretch, boost);
         let side = process::preview_side(&self.img, max_side, FULL_RES_MAX_SIDE);
         let (r, points) = process::render_preview::<Rgba8>(&self.img, &self.clip, side, params);
         let overlay = overlay::rasterize(&points, r.width, r.height).map(|m| Overlay {
@@ -123,9 +126,11 @@ impl Decoded {
         &self,
         neutralize: bool,
         auto_stretch: bool,
+        boost: u32,
         jpeg: bool,
     ) -> Result<Vec<u8>, String> {
-        let r = process::render_full::<[u8; 3]>(&self.img, params(neutralize, auto_stretch));
+        let params = params(neutralize, auto_stretch, boost);
+        let r = process::render_full::<[u8; 3]>(&self.img, params);
         export::encode(r.pixels.as_flattened(), r.width, r.height, jpeg)
     }
 }

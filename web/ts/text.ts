@@ -10,6 +10,7 @@ export function infoText(s: Entry) {
   const lines = [s.name];
   if (s.info) lines.push(s.info);
   if (!s.settings.autoStretch) lines.push("auto stretch off");
+  else if (s.settings.boost) lines.push(`stretch boosted: background ${Math.round(s.stretch.target * 100)}%`);
   const { total, dark, bright } = s.clip;
   if (total > 0) {
     const clipped = (n: number) => `${thousands(n)} (${((n * 100) / total).toFixed(3)}%)`;
@@ -49,7 +50,7 @@ export function debugText(s: Entry) {
   const bayer = s.bayer ? ` ${s.bayer}` : "";
   const mode = s.bin === 1 ? "full res" : `bin ${s.bin}`;
   const stretch = s.settings.autoStretch
-    ? `stretch shadows ${shadows.toFixed(4)} · midtones ${midtones.toFixed(4)} · target ${target}`
+    ? `stretch shadows ${shadows.toFixed(4)} · midtones ${midtones.toFixed(4)} · target ${Math.round(target * 100)}%`
     : "stretch off";
   return [
     `sensor ${s.srcWidth}×${s.srcHeight}${bayer} → preview ${s.width}×${s.height} (${mode})`,

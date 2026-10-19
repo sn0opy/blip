@@ -30,6 +30,7 @@ cargo build --release
 | Wheel / drag | Zoom / pan (kept while blinking) |
 | Double-click, <kbd>F</kbd> or <kbd>0</kbd> | Reset zoom |
 | <kbd>A</kbd> | Toggle auto stretch for this image |
+| <kbd>+</kbd> / <kbd>-</kbd> | Stretch harder / softer |
 | <kbd>C</kbd> | Toggle flashing clipped pixels on this image |
 | <kbd>S</kbd> | Toggle star sizes (HFR) on this image |
 | <kbd>T</kbd> | Toggle sensor tilt (corner HFR) on this image |

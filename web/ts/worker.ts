@@ -60,7 +60,7 @@ function bitmap(ptr: number, len: number, width: number, height: number) {
 
 async function renderImage(id: number, { key, decoded, fileBytes, readMs, decodeMs }: Loaded, settings: Settings) {
   const t = performance.now();
-  const r = decoded.render(settings.maxSide, settings.neutralize, settings.autoStretch);
+  const r = decoded.render(settings.maxSide, settings.neutralize, settings.autoStretch, settings.boost);
   const renderMs = performance.now() - t;
   try {
     const image = await bitmap(r.pixels_ptr(), r.pixels_len(), r.width, r.height);
@@ -125,6 +125,11 @@ function measureStars(id: number, { key, decoded }: Loaded) {
 }
 
 function exportJob(id: number, { decoded }: Loaded, settings: Settings, jpeg: boolean) {
-  const bytes = decoded.export(settings.neutralize, settings.autoStretch, jpeg) as Uint8Array<ArrayBuffer>;
+  const bytes = decoded.export(
+    settings.neutralize,
+    settings.autoStretch,
+    settings.boost,
+    jpeg,
+  ) as Uint8Array<ArrayBuffer>;
   reply({ type: "exported", id, bytes }, [bytes.buffer]);
 }

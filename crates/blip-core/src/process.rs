@@ -16,6 +16,10 @@ const FULL_STATS_SAMPLES: usize = 4_000_000;
 /// Clipped pixels collected for a preview's overlay.
 const MAX_CLIP_POINTS: usize = 4_000_000;
 
+/// Each stretch boost step raises the target background by this many percentage points.
+pub const BOOST_STEP_PERCENT: u32 = 10;
+pub const MAX_BOOST: u32 = 3;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StretchParams {
     /// Shadows clipping point in units of normalized MAD (negative = below median).
@@ -29,11 +33,25 @@ pub struct StretchParams {
     pub auto_stretch: bool,
 }
 
+impl StretchParams {
+    const TARGET_BG_PERCENT: u32 = 15;
+
+    /// The target background raised by `boost` steps (at most [`MAX_BOOST`]) of
+    /// [`BOOST_STEP_PERCENT`] percentage points each, to stretch harder than the default.
+    pub fn boosted(self, boost: u32) -> Self {
+        let percent = Self::TARGET_BG_PERCENT + boost.min(MAX_BOOST) * BOOST_STEP_PERCENT;
+        Self {
+            target_bg: f64::from(percent) / 100.0,
+            ..self
+        }
+    }
+}
+
 impl Default for StretchParams {
     fn default() -> Self {
         Self {
             shadows_clip: -2.8,
-            target_bg: 0.15,
+            target_bg: f64::from(Self::TARGET_BG_PERCENT) / 100.0,
             neutralize: true,
             auto_stretch: true,
         }
@@ -766,6 +784,23 @@ mod tests {
         // Bayer data is still debayered.
         let r = render::<[u8; 3]>(&channel_coded(12, 12, "RGGB"), 6, params);
         assert!(r.pixels.iter().all(|&p| p == [4, 12, 19]));
+    }
+
+    #[test]
+    fn boost_raises_the_background_by_absolute_steps() {
+        let data: Vec<u16> = (0..64 * 64)
+            .map(|i| (1000 + noise(i, 200)) as u16)
+            .collect();
+        let img = image(64, 64, None, &data);
+        let median = median_mad(&data).0;
+        for (boost, target) in [(0, 0.15), (1, 0.25), (2, 0.35), (3, 0.45), (9, 0.45)] {
+            let params = StretchParams::default().boosted(boost);
+            assert_eq!(params.target_bg, target);
+            let r = render_full::<[u8; 3]>(&img, params);
+            let s = &r.stretch;
+            let bg = mtf(s.midtones, (median - s.shadows) / (1.0 - s.shadows));
+            assert!((bg - target).abs() < 0.01, "boost {boost}: {bg}");
+        }
     }
 
     /// Bayer image whose samples encode their channel: R 1000, B 5000, and the

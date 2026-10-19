@@ -1,5 +1,7 @@
 import {
+  changeBoost,
   changed,
+  cycleBoost,
   select,
   step,
   toggleClipFlash,
@@ -40,6 +42,9 @@ const actions = {
     changed();
   },
   stretch: toggleStretch,
+  boostUp: () => changeBoost(1),
+  boostDown: () => changeBoost(-1),
+  boost: cycleBoost,
   clip: toggleClipFlash,
   stars: toggleStars,
   tilt: toggleTilt,
@@ -68,6 +73,7 @@ const SHORTCUTS: [keys: string, description: string, ...Binding[]][] = [
   ["Pinch / drag", "Zoom / pan (touch)"],
   ["Double-tap", "Reset zoom (touch)"],
   ["A", "Toggle auto stretch for this image", ["stretch", "a"]],
+  ["+ / -", "Stretch harder / softer", ["boostUp", "+", "="], ["boostDown", "-"]],
   ["C", "Toggle flashing clipped pixels on this image", ["clip", "c"]],
   ["S", "Toggle star sizes (HFR) on this image", ["stars", "s"]],
   ["T", "Toggle sensor tilt (corner HFR) on this image", ["tilt", "t"]],

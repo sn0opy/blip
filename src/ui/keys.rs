@@ -1,4 +1,5 @@
 use super::App;
+use blip_core::process::{BOOST_STEP_PERCENT, MAX_BOOST};
 use eframe::egui::{self, Key, Modifiers, Vec2};
 
 impl App {
@@ -51,6 +52,12 @@ impl App {
             self.params.neutralize = !self.params.neutralize;
             self.reload_all();
         }
+        if pressed(Key::Plus) || pressed(Key::Equals) {
+            self.change_boost(1);
+        }
+        if pressed(Key::Minus) {
+            self.change_boost(-1);
+        }
         if pressed(Key::A) {
             self.toggle_stretch();
         }
@@ -92,6 +99,23 @@ impl App {
         if pressed_cmd(Key::S) || pressed(Key::E) {
             self.export(ctx);
         }
+    }
+
+    fn change_boost(&mut self, delta: i32) {
+        let boost = self.boost.saturating_add_signed(delta).min(MAX_BOOST);
+        if boost != self.boost {
+            self.boost = boost;
+            self.reload_all();
+        }
+        let target = self.params.boosted(boost).target_bg * 100.0;
+        let text = match boost {
+            0 => format!("Stretch boost off: background {target:.0}% (+/- to change)"),
+            _ => format!(
+                "Stretch boost +{}%: background {target:.0}% (+/- to change)",
+                boost * BOOST_STEP_PERCENT
+            ),
+        };
+        self.set_status(text, Some(2.0));
     }
 
     fn toggle_clip_flash(&mut self) {

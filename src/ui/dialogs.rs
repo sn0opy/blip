@@ -10,6 +10,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Wheel / drag", "Zoom / pan (kept while blinking)"),
     ("Double-click, F, 0", "Reset zoom"),
     ("A", "Toggle auto stretch for this image"),
+    ("+ / -", "Stretch harder / softer"),
     ("C", "Toggle flashing clipped pixels on this image"),
     ("S", "Toggle star sizes (HFR) on this image"),
     ("T", "Toggle sensor tilt (corner HFR) on this image"),

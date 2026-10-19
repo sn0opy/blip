@@ -442,10 +442,10 @@ fn debug_image(
         ),
         if params.auto_stretch {
             format!(
-                "stretch shadows {:.4} · midtones {:.4} · target {} · neutralize {}",
+                "stretch shadows {:.4} · midtones {:.4} · target {:.0}% · neutralize {}",
                 s.shadows,
                 s.midtones,
-                params.target_bg,
+                params.target_bg * 100.0,
                 if params.neutralize { "on" } else { "off" }
             )
         } else {
@@ -507,6 +507,11 @@ fn info_text(
     }
     if !params.auto_stretch {
         lines.push("auto stretch off".into());
+    } else if params.target_bg != StretchParams::default().target_bg {
+        lines.push(format!(
+            "stretch boosted: background {:.0}%",
+            params.target_bg * 100.0
+        ));
     }
     let c = &l.clip;
     if c.total > 0 {

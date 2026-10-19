@@ -80,6 +80,26 @@ export function toggleStretch() {
   changed();
 }
 
+// Match blip-core's `StretchParams::boosted`.
+const TARGET_BG_PERCENT = 15;
+const BOOST_STEP_PERCENT = 10;
+const MAX_BOOST = 3;
+
+export function changeBoost(delta: number) {
+  const boost = Math.max(0, Math.min(MAX_BOOST, state.boost + delta));
+  const target = TARGET_BG_PERCENT + boost * BOOST_STEP_PERCENT;
+  const step = boost ? `+${boost * BOOST_STEP_PERCENT}%` : "off";
+  setStatus(`Stretch boost ${step}: background ${target}% (+/- to change)`, 2000);
+  if (boost === state.boost) return;
+  state.boost = boost;
+  changed();
+}
+
+/** The toolbar button steps up, then wraps around to no boost. */
+export const cycleBoost = () => changeBoost(state.boost < MAX_BOOST ? 1 : -MAX_BOOST);
+
+export const boostLabel = () => (state.boost ? `BG +${state.boost * BOOST_STEP_PERCENT}%` : "BG");
+
 export function toggleFullRes() {
   state.fullRes = !state.fullRes;
   setStatus(`${state.fullRes ? "Full resolution" : "Binned preview"} (B to toggle)`, 2000);
@@ -154,6 +174,7 @@ export function updateToolbar() {
     clip: !!cur && state.flashClip === cur,
     stretch: state.unstretched !== cur,
     neutralize: state.neutralize,
+    boost: state.boost > 0,
     fullRes: state.fullRes,
     mosaic: state.mosaic,
   };
@@ -161,4 +182,5 @@ export function updateToolbar() {
     const value = pressed[button.dataset.action!];
     if (value !== undefined) button.setAttribute("aria-pressed", String(value));
   }
+  $("#toolbar [data-action=boost]").textContent = boostLabel();
 }

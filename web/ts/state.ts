@@ -37,6 +37,7 @@ export const state = {
   shownAfter: null as number | null,
 
   neutralize: true,
+  boost: 0,
   fullRes: false,
   mosaic: false,
   unstretched: null as string | null,
@@ -58,11 +59,12 @@ export function settingsFor(name: string): Settings {
     maxSide: loadsFullRes() ? null : MAX_SIDE,
     neutralize: state.neutralize,
     autoStretch: state.unstretched !== name,
+    boost: state.boost,
   };
 }
 
 export const sameSettings = (a: Settings, b: Settings) =>
-  a.maxSide === b.maxSide && a.neutralize === b.neutralize && a.autoStretch === b.autoStretch;
+  a.maxSide === b.maxSide && a.neutralize === b.neutralize && a.autoStretch === b.autoStretch && a.boost === b.boost;
 
 export function valid(name: string | undefined): Entry | null {
   const entry = name === undefined ? undefined : state.cache.get(name);
