@@ -17,9 +17,19 @@ pub struct Star {
     pub hfr: f32,
 }
 
+/// A bright point for plate solving, including the saturated stars and blends HFR
+/// measurement rejects.
+#[derive(Clone, Copy, Debug)]
+pub struct Point {
+    pub x: f32,
+    pub y: f32,
+    pub flux: f32,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct StarStats {
     pub stars: Vec<Star>,
+    pub points_brightest_first: Vec<Point>,
     pub mean_hfr: f32,
     pub median_hfr: f32,
 }
@@ -32,6 +42,7 @@ const APERTURE: f32 = 4.0;
 /// Measurement aperture limits (sensor pixels).
 const MIN_RADIUS: f32 = 8.0;
 const MAX_RADIUS: f32 = 30.0;
+const MAX_POINTS: usize = 400;
 
 pub fn detect(img: &Image, clip: &ClipStats) -> StarStats {
     const MARGIN: usize = 16;
@@ -78,6 +89,7 @@ pub fn detect(img: &Image, clip: &ClipStats) -> StarStats {
         .collect();
     // Brightest first, so blends are resolved in favor of the dominant star.
     peaks.sort_by(|a, b| b.2.total_cmp(&a.2));
+    let points_brightest_first = bright_points(&smooth, bw, &peaks, threshold - bg);
 
     let measured: Vec<Option<Star>> = peaks
         .par_iter()
@@ -136,9 +148,80 @@ pub fn detect(img: &Image, clip: &ClipStats) -> StarStats {
     let median_hfr = hfrs.get(hfrs.len() / 2).copied().unwrap_or(0.0);
     StarStats {
         stars,
+        points_brightest_first,
         mean_hfr,
         median_hfr,
     }
+}
+
+/// Peaks that mostly sit on a raised local background (nebula knots, halos) are
+/// dropped; saturated stars are kept, as they are the ones a star catalog lists.
+fn bright_points(
+    smooth: &[f32],
+    bw: usize,
+    peaks_brightest_first: &[(usize, usize, f32)],
+    min_local_contrast: f32,
+) -> Vec<Point> {
+    const CENTROID_HALF_WIDTH: isize = 3;
+    const BACKGROUND_RING: (isize, isize) = (6, 9);
+    const MAX_PEAKS: usize = 4 * MAX_POINTS;
+    const MIN_SEPARATION_PX: f32 = 24.0;
+    let (ring_inner, ring_outer) = BACKGROUND_RING;
+    let at = |x: isize, y: isize| smooth[y as usize * bw + x as usize];
+    let bh = smooth.len() / bw;
+    let mut points: Vec<Point> = peaks_brightest_first
+        .par_iter()
+        .take(MAX_PEAKS)
+        .filter_map(|&(bx, by, peak)| {
+            let (bx, by) = (bx as isize, by as isize);
+            let ring_fits = (ring_outer..bw as isize - ring_outer).contains(&bx)
+                && (ring_outer..bh as isize - ring_outer).contains(&by);
+            if !ring_fits {
+                return None;
+            }
+            let mut ring = Vec::with_capacity(160);
+            for dy in -ring_outer..=ring_outer {
+                for dx in -ring_outer..=ring_outer {
+                    let r2 = dx * dx + dy * dy;
+                    if (ring_inner * ring_inner..=ring_outer * ring_outer).contains(&r2) {
+                        ring.push(at(bx + dx, by + dy));
+                    }
+                }
+            }
+            let mid = ring.len() / 2;
+            let local_background = *ring.select_nth_unstable_by(mid, f32::total_cmp).1;
+            if peak - local_background < min_local_contrast.max(0.0) {
+                return None;
+            }
+            let (mut sx, mut sy, mut flux) = (0.0f32, 0.0f32, 0.0f32);
+            for dy in -CENTROID_HALF_WIDTH..=CENTROID_HALF_WIDTH {
+                for dx in -CENTROID_HALF_WIDTH..=CENTROID_HALF_WIDTH {
+                    let f = (at(bx + dx, by + dy) - local_background).max(0.0);
+                    sx += f * dx as f32;
+                    sy += f * dy as f32;
+                    flux += f;
+                }
+            }
+            let binned_to_sensor = |b: f32| 2.0 * b + 0.5;
+            (flux > 0.0).then(|| Point {
+                x: binned_to_sensor(bx as f32 + sx / flux),
+                y: binned_to_sensor(by as f32 + sy / flux),
+                flux,
+            })
+        })
+        .collect();
+    points.sort_by(|a, b| b.flux.total_cmp(&a.flux));
+    let mut kept: Vec<Point> = Vec::with_capacity(MAX_POINTS);
+    for p in points {
+        let next_to_brighter = |k: &Point| (k.x - p.x).hypot(k.y - p.y) < MIN_SEPARATION_PX;
+        if !kept.iter().any(next_to_brighter) {
+            kept.push(p);
+            if kept.len() == MAX_POINTS {
+                break;
+            }
+        }
+    }
+    kept
 }
 
 /// Full-resolution luminance view: Bayer channels are scaled to a common background
@@ -330,6 +413,10 @@ fn measure(
         }
         x0 = (sx / sf) as f32;
         y0 = (sy / sf) as f32;
+        // The centroid can move by up to the radius: stay inside the image.
+        if !in_bounds(x0, y0, radius) {
+            return None;
+        }
 
         // HFR = flux-weighted mean distance from the centroid.
         let (mut sr, mut sf) = (0.0f64, 0.0f64);

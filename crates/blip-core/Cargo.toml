@@ -18,5 +18,21 @@ quick-xml = "0.42.0"
 rayon.workspace = true
 zrip = { version = "0.8.11", default-features = false, features = ["alloc", "simd"] }
 
+[features]
+# Plate solving with the embedded star catalog and deep-sky object list.
+solve = []
+
+[[example]]
+name = "build_catalog"
+required-features = ["solve"]
+
+[[example]]
+name = "build_dso"
+required-features = ["solve"]
+
+[[example]]
+name = "solve"
+required-features = ["solve"]
+
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }

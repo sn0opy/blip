@@ -63,6 +63,9 @@ impl App {
         if pressed(Key::T) {
             self.toggle_tilt_view();
         }
+        if pressed(Key::P) {
+            self.toggle_sky_view();
+        }
         if pressed(Key::G) {
             self.toggle_mosaic();
         }
@@ -128,6 +131,21 @@ impl App {
             self.set_status("Not enough stars to measure tilt".into(), Some(2.5));
         }
         self.tilt_view = Some(cur);
+    }
+
+    fn toggle_sky_view(&mut self) {
+        let cur = self.current().cloned();
+        if self.sky_view.is_some() && self.sky_view == cur {
+            self.sky_view = None;
+            return;
+        }
+        let Some(cur) = cur else { return };
+        match self.stars.get(&cur).map(|s| &s.solution) {
+            Some(Err(e)) => self.set_status(format!("Plate solve failed: {e}"), Some(4.0)),
+            None => self.set_status("Plate solving…".into(), Some(2.0)),
+            Some(Ok(_)) => {}
+        }
+        self.sky_view = Some(cur);
     }
 
     fn toggle_mosaic(&mut self) {

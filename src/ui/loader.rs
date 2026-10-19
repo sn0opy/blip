@@ -1,11 +1,12 @@
 //! Background loading: worker threads read, render and upload images, always taking
 //! the most recently requested one first.
 //!
-//! Star measurement is a separate, lower-priority job: workers only measure stars
-//! when no image is waiting, so it never delays an image. It needs the raw data, so a
-//! loaded image whose stars are still wanted keeps it in a small store (at most
-//! [`KEEP_RAW`] images; the least important goes first, and anything no longer wanted
-//! goes on every queue change). A star job whose data is gone reads the file again.
+//! Star measurement and plate solving are a separate, lower-priority job: workers only
+//! measure stars when no image is waiting, so it never delays an image. It needs the
+//! raw data, so a loaded image whose stars are still wanted keeps it in a small store
+//! (at most [`KEEP_RAW`] images; the least important goes first, and anything no longer
+//! wanted goes on every queue change). A star job whose data is gone reads the file
+//! again.
 //!
 //! Workers start before the window exists and only wait for [`Loader::attach`] to upload.
 //!
@@ -14,10 +15,11 @@
 //! not. A panic inside a job is caught and reported as that file's error (or as "no
 //! stars"), so a bad file can't take a worker down.
 
-use super::panic_message;
 use super::texture::{self, Filter, Level, Overlay, Texture, Uploader};
-use blip_core::stars::StarStats;
+use super::{MeasuredStars, panic_message};
+use blip_core::solve::{self, Hint};
 use blip_core::tilt::Tilt;
+use blip_core::wcs::Wcs;
 use blip_core::{image, process, stars};
 use eframe::egui::{self, Pos2, Rect};
 use std::collections::VecDeque;
@@ -74,8 +76,8 @@ pub struct ClipOverlay {
 
 pub enum Message {
     Image(PathBuf, Settings, Result<Box<Loaded>, String>),
-    /// Star sizes, the tilt they show and how long measuring took (ms).
-    Stars(PathBuf, StarStats, Option<Tilt>, f64),
+    /// Star sizes, the tilt they show and the plate solve.
+    Stars(PathBuf, Box<MeasuredStars>),
 }
 
 /// What a worker is busy with.
@@ -360,7 +362,7 @@ impl Worker {
         Some(Message::Image(job.path, job.settings, result?))
     }
 
-    /// Measure star sizes; `None` if they stopped being wanted.
+    /// Measure star sizes and plate solve; `None` if they stopped being wanted.
     fn stars(&self, path: PathBuf, raw: Option<Raw>, generation: u64) -> Option<Message> {
         let wanted = || {
             let q = self.shared.lock();
@@ -371,7 +373,7 @@ impl Worker {
                 Some(raw) => (raw.img, raw.clip),
                 None => {
                     let Ok(img) = image::read_file(&path) else {
-                        return Some((StarStats::default(), None, 0.0));
+                        return Some(MeasuredStars::failed("cannot read file"));
                     };
                     let clip = process::clip_stats(&img);
                     (img, clip)
@@ -381,15 +383,32 @@ impl Worker {
                 return None;
             }
             let t = Instant::now();
-            let stars = stars::detect(&img, &clip);
-            let tilt = Tilt::measure(&stars.stars, img.width, img.height);
-            Some((stars, tilt, t.elapsed().as_secs_f64() * 1000.0))
+            let stats = stars::detect(&img, &clip);
+            let tilt = Tilt::measure(&stats.stars, img.width, img.height);
+            let detect_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let solution = solve::solve(
+                &stats.points_brightest_first,
+                img.width,
+                img.height,
+                &Hint::from_header(&img),
+            );
+            Some(MeasuredStars {
+                stats,
+                tilt,
+                detect_ms,
+                solution,
+                header_wcs: Wcs::from_header(&img),
+            })
         }))
-        .unwrap_or_else(|_| Some((StarStats::default(), None, 0.0)));
+        .unwrap_or_else(|panic| {
+            Some(MeasuredStars::failed(&format!(
+                "internal error: {}",
+                panic_message(&*panic)
+            )))
+        });
 
         self.shared.lock().working[self.id] = None;
-        let (stats, tilt, ms) = result?;
-        Some(Message::Stars(path, stats, tilt, ms))
+        Some(Message::Stars(path, Box::new(result?)))
     }
 }
 
