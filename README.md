@@ -3,7 +3,7 @@
 **B**atch **L**ightframe **I**nspection & **P**review: a minimal, fast FITS and XISF
 blinker for astro images, hardware-accelerated on the GPU.
 
-![blip on Windows](assets/screenshot-windows.jpg)
+![blip on Windows](assets/screenshot-macos.png)
 
 ## Install
 
