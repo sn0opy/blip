@@ -58,7 +58,7 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
 members = ["crates/blip-core"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Sascha Ohms"]
