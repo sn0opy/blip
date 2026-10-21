@@ -19,7 +19,6 @@ use super::texture::{self, Filter, Level, Overlay, Texture, Uploader};
 use super::{MeasuredStars, panic_message};
 use blip_core::solve::{self, Hint};
 use blip_core::tilt::Tilt;
-use blip_core::wcs::Wcs;
 use blip_core::{image, process, stars};
 use eframe::egui::{self, Pos2, Rect};
 use std::collections::VecDeque;
@@ -418,7 +417,6 @@ impl Worker {
                 tilt,
                 detect_ms,
                 solution,
-                header_wcs: Wcs::from_header(&img),
             })
         }))
         .unwrap_or_else(|panic| {

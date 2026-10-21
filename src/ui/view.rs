@@ -1,10 +1,8 @@
 use super::loader::Work;
 use super::{App, CacheEntry, MeasuredStars, STATUS_FADE, draw, file_name};
 use blip_core::process::StretchParams;
-use blip_core::wcs;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 /// On/off period of the clipped-pixel flash, in seconds.
 const FLASH_PERIOD: f64 = 0.8;
@@ -95,19 +93,11 @@ impl App {
         painter.rect_filled(rect, 0.0, Color32::BLACK);
 
         let current = self.current().cloned();
-        if self.selected_at.as_ref().map(|(p, _)| p) != current.as_ref() {
-            self.selected_at = current.clone().map(|p| (p, Instant::now()));
-            self.shown_after = None;
-        }
         if let Some(cur) = &current
             && self.cache.contains_key(cur)
         {
             self.shown = Some(cur.clone());
             self.stale = None;
-            if self.shown_after.is_none() {
-                self.shown_after =
-                    (self.selected_at.as_ref()).map(|(_, t)| t.elapsed().as_secs_f64() * 1000.0);
-            }
         }
         if !self.mosaic {
             self.zoom_and_pan(ui, &response, rect);
@@ -118,7 +108,6 @@ impl App {
         let mut debug_drawn = false;
 
         let params = (self.shown.as_ref()).map_or(self.params, |p| self.settings(p).stretch);
-        let shown_after = self.shown_after;
         let shown = self.shown.as_ref().and_then(|p| {
             let stale = self
                 .stale
@@ -196,11 +185,7 @@ impl App {
                 draw::text_box(&painter, rect.left_top() + Vec2::new(10.0, 8.0), &text, 1.0);
             }
             if let Some(general) = &debug_general {
-                let shown_after = shown_after.filter(|_| is_current);
-                let text = format!(
-                    "{}\n{general}",
-                    debug_image(entry, stars, params, shown_after)
-                );
+                let text = format!("{}\n{general}", debug_image(entry, stars, params));
                 draw::text_box_aligned(&painter, debug_pos, egui::Align2::RIGHT_TOP, &text, 1.0);
                 debug_drawn = true;
             }
@@ -416,12 +401,7 @@ fn gear_button(ui: &mut egui::Ui) -> egui::Response {
 }
 
 /// Debug lines for the shown image: geometry, timings, stretch, saturation level.
-fn debug_image(
-    entry: &CacheEntry,
-    stars: Option<&MeasuredStars>,
-    params: StretchParams,
-    shown_after: Option<f64>,
-) -> String {
+fn debug_image(entry: &CacheEntry, stars: Option<&MeasuredStars>, params: StretchParams) -> String {
     let l = &entry.loaded;
     let mode = if l.bin == 1 {
         "full res".to_string()
@@ -450,9 +430,6 @@ fn debug_image(
             "sensor {}×{}{pattern} → texture {}×{} ({mode})",
             l.src_size[0], l.src_size[1], l.size[0], l.size[1]
         ),
-        shown_after.map_or("selected image still loading".to_string(), |ms| {
-            format!("shown {ms:.0} ms after selecting")
-        }),
         format!(
             "read {:.0} ms ({:.0} MB, {:.0} MB/s) · decode {:.0} ms",
             l.read_ms,
@@ -484,43 +461,22 @@ fn debug_image(
             )
         },
         format!("saturation level {} ADU", l.clip.bright_level),
-        stars.map_or("plate solve …".to_string(), |s| {
-            debug_solve(s, l.src_size)
-        }),
+        stars.map_or("solve …".to_string(), debug_solve),
     ]
     .join("\n")
 }
 
-fn debug_solve(s: &MeasuredStars, size: [usize; 2]) -> String {
+fn debug_solve(s: &MeasuredStars) -> String {
     let Ok(sol) = &s.solution else {
-        return "plate solve failed".into();
+        return "solve failed".into();
     };
-    let mut text = format!(
-        "plate solve {:.0} ms · {} points · {} tiles · {:.2}° from header position",
+    format!(
+        "solve {:.0} ms · {}/{} matched · {:.2}° off hint",
         sol.ms,
+        sol.matched_stars,
         s.stats.points_brightest_first.len(),
-        sol.tiles_tried,
         sol.hint_offset_deg
-    );
-    if let Some(h) = &s.header_wcs {
-        let (w, hgt) = (size[0] as f64 - 1.0, size[1] as f64 - 1.0);
-        let worst = [
-            (0.0, 0.0),
-            (w, 0.0),
-            (0.0, hgt),
-            (w, hgt),
-            (w / 2.0, hgt / 2.0),
-        ]
-        .iter()
-        .map(|&(x, y)| {
-            let (a, b) = sol.wcs.pixel_to_sky(x, y);
-            let (c, d) = h.pixel_to_sky(x, y);
-            wcs::separation(a, b, c, d) * 3600.0
-        })
-        .fold(0.0, f64::max);
-        text += &format!(" · header WCS (linear) up to {worst:.1}″ off");
-    }
-    text
+    )
 }
 
 fn info_text(

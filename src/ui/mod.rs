@@ -17,7 +17,6 @@ use blip_core::process::StretchParams;
 use blip_core::solve::Solution;
 use blip_core::stars::StarStats;
 use blip_core::tilt::Tilt;
-use blip_core::wcs::Wcs;
 use eframe::egui::{self, Vec2};
 use loader::{Binning, Loaded, Message, Settings};
 use prefs::{BinningPref, Preferences};
@@ -49,7 +48,6 @@ pub struct MeasuredStars {
     tilt: Option<Tilt>,
     detect_ms: f64,
     solution: Result<Solution, String>,
-    header_wcs: Option<Wcs>,
 }
 
 impl MeasuredStars {
@@ -59,7 +57,6 @@ impl MeasuredStars {
             tilt: None,
             detect_ms: 0.0,
             solution: Err(reason.to_string()),
-            header_wcs: None,
         }
     }
 }
@@ -117,10 +114,6 @@ pub struct App {
     errors: HashMap<PathBuf, String>,
     /// The image on screen; lags behind `selected` while the next one loads.
     shown: Option<PathBuf>,
-    /// For the debug panel: when the current image was selected, and how long it then
-    /// took to show (ms).
-    selected_at: Option<(PathBuf, Instant)>,
-    shown_after: Option<f64>,
     /// The shown image while a settings change re-renders it (avoids a black flash).
     stale: Option<(PathBuf, CacheEntry)>,
     tick: u64,
@@ -244,8 +237,6 @@ impl App {
             cache: HashMap::new(),
             errors: HashMap::new(),
             shown: None,
-            selected_at: None,
-            shown_after: None,
             stale: None,
             tick: 0,
             params: StretchParams {
