@@ -1,4 +1,4 @@
-use super::prefs::{BinningPref, MAX_PREFETCH};
+use super::prefs::{BinningPref, MAX_PREFETCH, MAX_SUBFOLDER_DEPTH};
 use super::{App, MAX_SIDE, file_name};
 use blip_core::process::{BOOST_STEP_PERCENT, MAX_BOOST};
 use eframe::egui::{self, Color32, Key, Modifiers};
@@ -84,6 +84,22 @@ impl App {
             ui.set_width(380.0);
             ui.heading("Settings");
             ui.add_space(8.0);
+
+            ui.label(egui::RichText::new("Folder").strong());
+            let label = match prefs.subfolder_depth {
+                0 => "Only the opened folder".to_string(),
+                1 => "Subfolders 1 level deep".to_string(),
+                n => format!("Subfolders up to {n} levels deep"),
+            };
+            dragging |= ui
+                .add(slider(
+                    &mut prefs.subfolder_depth,
+                    0..=MAX_SUBFOLDER_DEPTH,
+                    label,
+                ))
+                .dragged();
+            ui.label(egui::RichText::new("How many folders deep to search for images.").weak());
+            ui.add_space(10.0);
 
             ui.label(egui::RichText::new("Preview").strong());
             ui.horizontal(|ui| {

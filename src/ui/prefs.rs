@@ -7,6 +7,7 @@ use eframe::Storage;
 use std::collections::HashMap;
 
 pub const MAX_PREFETCH: usize = 8;
+pub const MAX_SUBFOLDER_DEPTH: usize = 6;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum BinningPref {
@@ -55,6 +56,8 @@ impl BinningPref {
 /// The starting state: keys change the session, not these.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Preferences {
+    /// 0 lists only the opened folder's images.
+    pub subfolder_depth: usize,
     pub binning: BinningPref,
     /// Counted in the browsing direction.
     pub ahead: usize,
@@ -74,6 +77,7 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
+            subfolder_depth: 0,
             binning: BinningPref::Auto,
             ahead: 3,
             behind: 1,
@@ -107,6 +111,9 @@ impl Preferences {
         let number = |key: &str, max: usize| {
             (storage.get_string(key)?.parse::<usize>().ok()).filter(|&n| n <= max)
         };
+        if let Some(n) = number("subfolder_depth", MAX_SUBFOLDER_DEPTH) {
+            prefs.subfolder_depth = n;
+        }
         if let Some(n) = number("ahead", MAX_PREFETCH) {
             prefs.ahead = n;
         }
@@ -136,6 +143,7 @@ impl Preferences {
     }
 
     pub fn save(mut self, storage: &mut dyn Storage) {
+        storage.set_string("subfolder_depth", self.subfolder_depth.to_string());
         storage.set_string("binning", self.binning.key().into());
         storage.set_string("ahead", self.ahead.to_string());
         storage.set_string("behind", self.behind.to_string());
@@ -191,6 +199,7 @@ mod tests {
     #[test]
     fn saved_preferences_load_back() {
         let prefs = Preferences {
+            subfolder_depth: MAX_SUBFOLDER_DEPTH,
             binning: BinningPref::Bin3,
             ahead: MAX_PREFETCH,
             behind: 0,
@@ -216,7 +225,9 @@ mod tests {
         assert_eq!(load(&[]), defaults);
         let max_prefetch = (MAX_PREFETCH + 1).to_string();
         let max_boost = (MAX_BOOST + 1).to_string();
+        let max_subfolder_depth = (MAX_SUBFOLDER_DEPTH + 1).to_string();
         let invalid = [
+            ("subfolder_depth", max_subfolder_depth.as_str()),
             ("binning", "5"),
             ("ahead", max_prefetch.as_str()),
             ("behind", "-1"),

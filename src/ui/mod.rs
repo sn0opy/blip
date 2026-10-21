@@ -8,6 +8,7 @@ mod keys;
 mod loader;
 mod prefs;
 mod texture;
+mod tree;
 mod view;
 
 pub use gpu::wgpu_options;
@@ -26,6 +27,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
+use tree::FolderTree;
 
 pub const APP_ID: &str = "sh.sascha.blip";
 /// Previews are binned so their long side is at most this many pixels.
@@ -107,6 +109,7 @@ pub struct App {
     /// Last folder of a previous session; only the Open dialog's start location.
     last_dir: Option<PathBuf>,
     files: Vec<PathBuf>,
+    tree: FolderTree,
     selected: usize,
     /// Direction of the last navigation step, used to prefetch ahead.
     direction: isize,
@@ -170,15 +173,15 @@ fn initial_settings(prefs: &Preferences) -> Settings {
 
 pub fn preload(preloader: Preloader, path: PathBuf) {
     std::thread::spawn(move || {
+        let prefs = Preferences::load_saved(APP_ID);
         let first = if path.is_dir() {
-            list_images(&path)
+            list_images(&path, prefs.subfolder_depth)
                 .ok()
                 .and_then(|files| files.into_iter().next())
         } else {
             is_image(&path).then_some(path)
         };
         if let Some(first) = first {
-            let prefs = Preferences::load_saved(APP_ID);
             preloader.preload(first, initial_settings(&prefs));
         }
     });
@@ -205,14 +208,29 @@ fn is_image(path: &Path) -> bool {
         .is_some_and(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
-fn list_images(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)?
+/// Images of the subfolders come first, folder by folder, then the folder's own.
+/// Unreadable subfolders are skipped.
+fn list_images(dir: &Path, subfolder_depth: usize) -> std::io::Result<Vec<PathBuf>> {
+    let mut subfolders = Vec::new();
+    let mut images = Vec::new();
+    for path in std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| is_image(p))
+    {
+        if is_image(&path) {
+            images.push(path);
+        } else if subfolder_depth > 0 && path.is_dir() {
+            subfolders.push(path);
+        }
+    }
+    let by_name = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
+    subfolders.sort_by_key(by_name);
+    images.sort_by_key(by_name);
+    let mut listed: Vec<PathBuf> = (subfolders.iter())
+        .flat_map(|folder| list_images(folder, subfolder_depth - 1).unwrap_or_default())
         .collect();
-    files.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
-    Ok(files)
+    listed.extend(images);
+    Ok(listed)
 }
 
 impl App {
@@ -232,6 +250,7 @@ impl App {
                 .and_then(|s| s.get_string("last_dir"))
                 .map(PathBuf::from),
             files: Vec::new(),
+            tree: FolderTree::default(),
             selected: 0,
             direction: 1,
             cache: HashMap::new(),
@@ -294,6 +313,7 @@ impl App {
             let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
             (dir, Some(path.to_path_buf()))
         };
+        self.tree = FolderTree::new(&dir);
         self.dir = Some(dir);
         self.cache.clear();
         self.errors.clear();
@@ -310,7 +330,7 @@ impl App {
     fn refresh(&mut self) {
         let Some(dir) = &self.dir else { return };
         let current = self.current().cloned();
-        self.files = match list_images(dir) {
+        self.files = match list_images(dir, self.prefs.subfolder_depth) {
             Ok(files) => {
                 if self
                     .status
@@ -326,6 +346,7 @@ impl App {
                 Vec::new()
             }
         };
+        self.tree.rebuild(&self.files);
         self.selected = current
             .and_then(|c| self.files.iter().position(|p| *p == c))
             .unwrap_or(0);
@@ -508,6 +529,9 @@ impl App {
         if prefs.binning != old.binning {
             self.full_res = false;
         }
+        if prefs.subfolder_depth != old.subfolder_depth {
+            self.refresh();
+        }
         if reload {
             self.reload_all();
         } else if (prefs.ahead, prefs.behind) != (old.ahead, old.behind) {
@@ -552,6 +576,7 @@ impl App {
         }
         if let Some(i) = self.files.iter().position(|p| p == path) {
             self.files.remove(i);
+            self.tree.rebuild(&self.files);
             if self.selected > i || self.selected >= self.files.len() {
                 self.selected = self.selected.saturating_sub(1);
             }

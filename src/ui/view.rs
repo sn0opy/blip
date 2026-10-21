@@ -1,7 +1,8 @@
 use super::loader::Work;
+use super::tree::Row;
 use super::{App, CacheEntry, MeasuredStars, STATUS_FADE, draw, file_name};
 use blip_core::process::StretchParams;
-use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
+use eframe::egui::{self, AtomExt as _, Color32, Pos2, Rect, Vec2};
 use std::path::{Path, PathBuf};
 
 /// On/off period of the clipped-pixel flash, in seconds.
@@ -43,6 +44,12 @@ impl App {
         ui.add(egui::Label::new(egui::RichText::new(label).weak()).truncate());
         ui.separator();
 
+        if self.scroll_to_selected
+            && let Some(current) = self.files.get(self.selected)
+        {
+            self.tree.reveal(current);
+        }
+        let rows = self.tree.visible_rows();
         let row_h = ui.spacing().interact_size.y;
         let spacing = ui.spacing().item_spacing.y;
         let mut area = egui::ScrollArea::both().auto_shrink([false, false]);
@@ -51,7 +58,10 @@ impl App {
             let offset =
                 egui::scroll_area::State::load(ui.ctx(), id).map_or(0.0, |s| s.clamped_offset().y);
             let view_h = ui.available_height();
-            let top = self.selected as f32 * (row_h + spacing);
+            let selected_row = (rows.iter())
+                .position(|row| matches!(row, Row::Image { index, .. } if *index == self.selected))
+                .unwrap_or(0);
+            let top = selected_row as f32 * (row_h + spacing);
             if top < offset {
                 area = area.vertical_scroll_offset(top);
             } else if top + row_h > offset + view_h {
@@ -61,25 +71,54 @@ impl App {
         }
         let mut clicked = None;
         area.id_salt("file_list_scroll")
-            .show_rows(ui, row_h, self.files.len(), |ui, range| {
-                for i in range {
-                    let path = &self.files[i];
-                    let mut text = egui::RichText::new(file_name(path));
-                    if self.errors.contains_key(path) {
-                        text = text.color(Color32::from_rgb(220, 90, 90));
-                    }
-                    let button =
-                        egui::Button::selectable(i == self.selected, (text, egui::Atom::grow()))
-                            .wrap_mode(egui::TextWrapMode::Extend)
-                            .min_size(Vec2::new(ui.available_width(), row_h));
+            .show_rows(ui, row_h, rows.len(), |ui, range| {
+                for row in &rows[range] {
+                    let button = self
+                        .tree_row_button(ui, row)
+                        .wrap_mode(egui::TextWrapMode::Extend)
+                        .min_size(Vec2::new(ui.available_width(), row_h));
                     if ui.add(button).clicked() {
-                        clicked = Some(i);
+                        clicked = Some((*row).clone());
                     }
                 }
             });
-        if let Some(i) = clicked {
-            self.select(i);
+        match clicked {
+            Some(Row::Image { index, .. }) => self.select(index),
+            Some(Row::Folder { path, .. }) => self.tree.toggle(&path),
+            None => {}
         }
+    }
+
+    /// Indented so images line up with the name of the folder they are in.
+    fn tree_row_button(&self, ui: &egui::Ui, row: &Row) -> egui::Button<'static> {
+        let triangle_side = ui.spacing().icon_width;
+        let gap = ui.spacing().icon_spacing;
+        let (mut atoms, selected) = match row {
+            Row::Folder { path, .. } => {
+                let mut atoms = egui::Atoms::new((file_name(path), egui::Atom::grow()));
+                atoms.push_left(disclosure_triangle(
+                    triangle_side,
+                    !self.tree.is_collapsed(path),
+                ));
+                (atoms, false)
+            }
+            Row::Image { index, .. } => {
+                let path = &self.files[*index];
+                let mut text = egui::RichText::new(file_name(path));
+                if self.errors.contains_key(path) {
+                    text = text.color(Color32::from_rgb(220, 90, 90));
+                }
+                (
+                    egui::Atoms::new((text, egui::Atom::grow())),
+                    *index == self.selected,
+                )
+            }
+        };
+        if row.depth() > 0 {
+            let indent = row.depth() as f32 * (triangle_side + gap) - gap;
+            atoms.push_left(egui::Atom::default().atom_size(Vec2::new(indent, 0.0)));
+        }
+        egui::Button::selectable(selected, atoms)
     }
 
     pub(super) fn image_view(&mut self, ui: &mut egui::Ui) {
@@ -262,22 +301,29 @@ impl App {
         let loading = |p: &PathBuf| {
             (status.workers.iter()).any(|w| matches!(w, Some(Work::Image(j)) if j.path == *p))
         };
-        let prefetch = (self.prefetch_window().into_iter())
+        let mut neighbors: Vec<(isize, char)> = (self.prefetch_window().into_iter())
             .filter(|(o, _)| *o != 0)
             .map(|(o, p)| {
                 let state = if self.cache.contains_key(p) {
-                    "cached"
+                    '●'
                 } else if self.errors.contains_key(p) {
-                    "error"
+                    '×'
                 } else if loading(p) {
-                    "loading"
+                    '◐'
                 } else {
-                    "queued"
+                    '○'
                 };
-                format!("{o:+} {state}")
+                (o, state)
             })
-            .collect::<Vec<_>>()
-            .join(" · ");
+            .collect();
+        neighbors.sort_by_key(|(o, _)| o.abs());
+        let states_on_side = |below: bool| -> String {
+            (neighbors.iter())
+                .filter(|(o, _)| (*o > 0) == below)
+                .map(|(_, state)| *state)
+                .collect()
+        };
+        let prefetch = format!("+{} · -{}", states_on_side(true), states_on_side(false));
         let mut lines = vec![
             format!(
                 "cache {}/{} images · {} MB on GPU · {} star measurements",
@@ -385,6 +431,19 @@ fn clip_flash_on(ui: &egui::Ui) -> bool {
 }
 
 /// The bundled fonts have no gear glyph.
+fn disclosure_triangle(side: f32, open: bool) -> egui::Atom<'static> {
+    egui::Atom::paint(Vec2::splat(side), move |ui, args| {
+        let pointing = if open {
+            0.0
+        } else {
+            -std::f32::consts::TAU / 4.0
+        };
+        let rect = Rect::from_center_size(args.rect.center(), args.rect.size() * 0.6);
+        let triangle = egui::Shape::rotated_triangle(rect, pointing, args.fallback_text_color);
+        ui.painter().add(triangle);
+    })
+}
+
 fn gear_button(ui: &mut egui::Ui) -> egui::Response {
     let side = ui.spacing().interact_size.y;
     let response = ui.add(egui::Button::new("").min_size(Vec2::splat(side)));
