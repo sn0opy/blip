@@ -30,11 +30,25 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("?, F1", "This help"),
 ];
 
+/// `text (key)` with the key styled as in the shortcuts dialog.
+fn with_key(style: &egui::Style, text: &str, key: &str) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let font = egui::FontSelection::Default;
+    let align = egui::Align::Center;
+    egui::RichText::new(format!("{text} (")).append_to(&mut job, style, font.clone(), align);
+    egui::RichText::new(key)
+        .monospace()
+        .strong()
+        .append_to(&mut job, style, font.clone(), align);
+    egui::RichText::new(")").append_to(&mut job, style, font, align);
+    job
+}
+
 /// Without the value box, which would be a text field.
 fn slider<'a, N: egui::emath::Numeric>(
     value: &'a mut N,
     range: std::ops::RangeInclusive<N>,
-    label: String,
+    label: impl Into<egui::WidgetText>,
 ) -> egui::Slider<'a> {
     egui::Slider::new(value, range)
         .show_value(false)
@@ -82,6 +96,8 @@ impl App {
         let mut dragging = false;
         let modal = egui::Modal::new(egui::Id::unique("settings")).show(ctx, |ui| {
             ui.set_width(380.0);
+            let style = ui.style().clone();
+            let key = |text: &str, key: &str| with_key(&style, text, key);
             ui.heading("Settings");
             ui.add_space(8.0);
 
@@ -103,7 +119,7 @@ impl App {
 
             ui.label(egui::RichText::new("Preview").strong());
             ui.horizontal(|ui| {
-                ui.label("Binning (B)");
+                ui.label(key("Binning", "B"));
                 egui::ComboBox::from_id_salt("binning")
                     .selected_text(prefs.binning.label())
                     .show_ui(ui, |ui| {
@@ -115,9 +131,6 @@ impl App {
             let mode = match prefs.binning {
                 BinningPref::Auto => format!("Bins 2x2, 3x3, … to fit {MAX_SIDE} px."),
                 BinningPref::Bin1 => "Full resolution.".into(),
-                BinningPref::Bin3 => {
-                    "Color (Bayer) images bin 4x4: they bin whole 2x2 cells.".into()
-                }
                 // Keeps the line, so the GPU limit doesn't move.
                 _ => " ".into(),
             };
@@ -147,28 +160,29 @@ impl App {
             ui.add_space(10.0);
 
             ui.label(egui::RichText::new("On start").strong());
-            ui.checkbox(&mut prefs.show_info, "Info overlay (I)");
-            ui.checkbox(&mut prefs.show_debug, "Debug info (D)");
-            ui.checkbox(&mut prefs.actual_size, "Zoom 1:1 (Z)");
+            ui.checkbox(&mut prefs.show_info, key("Info overlay", "I"));
+            ui.checkbox(&mut prefs.show_debug, key("Debug info", "D"));
+            ui.checkbox(&mut prefs.actual_size, key("Zoom 1:1", "Z"));
             ui.add_space(10.0);
 
             ui.label(egui::RichText::new("Apply to every image").strong());
-            ui.checkbox(&mut prefs.auto_stretch, "Auto stretch (A)");
+            ui.checkbox(&mut prefs.auto_stretch, key("Auto stretch", "A"));
             let label = match prefs.boost {
-                0 => "Stretch boost off (+/-)".to_string(),
-                n => format!("Stretch boost +{}% (+/-)", n * BOOST_STEP_PERCENT),
+                0 => "Stretch boost off".to_string(),
+                n => format!("Stretch boost +{}%", n * BOOST_STEP_PERCENT),
             };
+            let label = key(&label, "+/-");
             dragging |= ui
                 .add(slider(&mut prefs.boost, 0..=MAX_BOOST, label))
                 .dragged();
-            ui.checkbox(&mut prefs.neutralize, "Background neutralization (N)");
-            ui.checkbox(&mut prefs.flash_clip, "Flashing clipped pixels (C)");
-            ui.checkbox(&mut prefs.star_view, "Star sizes (S)");
-            ui.checkbox(&mut prefs.tilt_view, "Sensor tilt (T)");
-            ui.checkbox(&mut prefs.sky_view, "Plate solve annotation (P)");
+            ui.checkbox(&mut prefs.neutralize, key("Background neutralization", "N"));
+            ui.checkbox(&mut prefs.flash_clip, key("Flashing clipped pixels", "C"));
+            ui.checkbox(&mut prefs.star_view, key("Star sizes", "S"));
+            ui.checkbox(&mut prefs.tilt_view, key("Sensor tilt", "T"));
+            ui.checkbox(&mut prefs.sky_view, key("Plate solve annotation", "P"));
             ui.add_space(10.0);
 
-            if ui.button("Close (Esc)").clicked() {
+            if ui.button(key("Close", "Esc")).clicked() {
                 close = true;
             }
         });
