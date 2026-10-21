@@ -159,7 +159,7 @@ fn list_images(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext, start: Option<PathBuf>, loader: Loader) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        cc.egui_ctx.set_theme(egui::Theme::Dark);
         loader.attach(
             cc.egui_ctx.clone(),
             texture::Uploader::new(&cc.egui_ctx, cc.wgpu_render_state.as_ref()),
