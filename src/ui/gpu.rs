@@ -4,6 +4,12 @@ use std::sync::Arc;
 
 pub fn wgpu_options(backend: Option<&str>, present: Option<&str>) -> WgpuConfiguration {
     let mut setup = WgpuSetupCreateNew::without_display_handle();
+    let egui_descriptor = setup.device_descriptor.clone();
+    setup.device_descriptor = Arc::new(move |adapter| {
+        let mut desc = egui_descriptor(adapter);
+        desc.required_limits.max_texture_dimension_2d = adapter.limits().max_texture_dimension_2d;
+        desc
+    });
     let backends = match backend {
         Some("dx12") => Some(Backends::DX12),
         Some("vulkan") => Some(Backends::VULKAN),
