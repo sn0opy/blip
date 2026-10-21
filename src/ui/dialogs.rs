@@ -11,6 +11,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Delete / Backspace", "Delete file permanently (asks first)"),
     ("Wheel / drag", "Zoom / pan (kept while blinking)"),
     ("Double-click, F, 0", "Reset zoom"),
+    ("Z", "Zoom to 1:1"),
     ("A", "Toggle auto stretch for this image"),
     ("+ / -", "Stretch harder / softer"),
     ("C", "Toggle flashing clipped pixels on this image"),
@@ -132,6 +133,7 @@ impl App {
             ui.label(egui::RichText::new("On start").strong());
             ui.checkbox(&mut prefs.show_info, "Info overlay (I)");
             ui.checkbox(&mut prefs.show_debug, "Debug info (D)");
+            ui.checkbox(&mut prefs.actual_size, "Zoom 1:1 (Z)");
             ui.add_space(10.0);
 
             ui.label(egui::RichText::new("Apply to every image").strong());

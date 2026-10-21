@@ -85,8 +85,10 @@ impl App {
             self.toggle_full_res();
         }
         if pressed(Key::Num0) || pressed(Key::F) {
-            self.zoom = 1.0;
-            self.pan = Vec2::ZERO;
+            self.set_actual_size(false);
+        }
+        if pressed(Key::Z) {
+            self.toggle_actual_size();
         }
         if pressed_cmd(Key::O) || pressed(Key::O) {
             self.pick_folder();
@@ -111,6 +113,22 @@ impl App {
             ),
         };
         self.set_status(text, Some(2.0));
+    }
+
+    fn toggle_actual_size(&mut self) {
+        self.set_actual_size(!self.actual_size);
+        let text = if self.actual_size {
+            "Zoom 1:1 (Z to fit)"
+        } else {
+            "Zoom to fit (Z for 1:1)"
+        };
+        self.set_status(text.into(), Some(2.0));
+    }
+
+    pub(super) fn set_actual_size(&mut self, on: bool) {
+        self.actual_size = on;
+        self.zoom = 1.0;
+        self.pan = Vec2::ZERO;
     }
 
     fn toggle_full_res(&mut self) {

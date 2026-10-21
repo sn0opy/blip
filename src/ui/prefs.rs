@@ -62,6 +62,7 @@ pub struct Preferences {
     pub boost: u32,
     pub show_info: bool,
     pub show_debug: bool,
+    pub actual_size: bool,
     pub neutralize: bool,
     pub auto_stretch: bool,
     pub flash_clip: bool,
@@ -79,6 +80,7 @@ impl Default for Preferences {
             boost: 0,
             show_info: true,
             show_debug: false,
+            actual_size: false,
             neutralize: true,
             auto_stretch: true,
             flash_clip: false,
@@ -143,10 +145,11 @@ impl Preferences {
         }
     }
 
-    fn flags(&mut self) -> [(&'static str, &mut bool); 8] {
+    fn flags(&mut self) -> [(&'static str, &mut bool); 9] {
         [
             ("show_info", &mut self.show_info),
             ("show_debug", &mut self.show_debug),
+            ("actual_size", &mut self.actual_size),
             ("neutralize", &mut self.neutralize),
             ("auto_stretch", &mut self.auto_stretch),
             ("flash_clip", &mut self.flash_clip),
@@ -194,6 +197,7 @@ mod tests {
             boost: MAX_BOOST,
             show_info: false,
             show_debug: true,
+            actual_size: true,
             neutralize: false,
             auto_stretch: false,
             flash_clip: true,
@@ -219,6 +223,7 @@ mod tests {
             ("boost", max_boost.as_str()),
             ("show_info", "no"),
             ("show_debug", "1"),
+            ("actual_size", "on"),
             ("neutralize", ""),
             ("auto_stretch", "TRUE"),
             ("flash_clip", "yes"),

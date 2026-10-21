@@ -29,6 +29,7 @@ cargo build --release
 | <kbd>Delete</kbd> or <kbd>Backspace</kbd> | Delete file permanently (asks first) |
 | Wheel / drag | Zoom / pan (kept while blinking) |
 | Double-click, <kbd>F</kbd> or <kbd>0</kbd> | Reset zoom |
+| <kbd>Z</kbd> | Zoom to 1:1 |
 | <kbd>A</kbd> | Toggle auto stretch for this image |
 | <kbd>+</kbd> / <kbd>-</kbd> | Stretch harder / softer |
 | <kbd>C</kbd> | Toggle flashing clipped pixels on this image |

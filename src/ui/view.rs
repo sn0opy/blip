@@ -159,6 +159,10 @@ impl App {
             } else {
                 let size = Vec2::new(loaded.size[0] as f32, loaded.size[1] as f32);
                 let fit = (rect.width() / size.x).min(rect.height() / size.y);
+                if self.actual_size {
+                    let ppp = ui.ctx().pixels_per_point();
+                    self.zoom = loaded.src_size[0] as f32 / (ppp * size.x * fit);
+                }
                 let img_rect =
                     Rect::from_center_size(rect.center() + self.pan, size * fit * self.zoom);
                 let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
@@ -241,6 +245,7 @@ impl App {
         if response.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y + i.zoom_delta().ln() * 200.0);
             if scroll != 0.0 {
+                self.actual_size = false;
                 let new_zoom = (self.zoom * (scroll / 200.0).exp()).clamp(1.0, 32.0);
                 if let Some(pointer) = response.hover_pos() {
                     let center = rect.center() + self.pan;
@@ -253,7 +258,7 @@ impl App {
             self.pan += response.drag_delta();
         }
         if response.double_clicked() {
-            self.zoom = 1.0;
+            self.set_actual_size(false);
         }
         if self.zoom <= 1.0 {
             self.pan = Vec2::ZERO;

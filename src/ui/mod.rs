@@ -137,6 +137,8 @@ pub struct App {
     gpu_info: String,
     zoom: f32,
     pan: Vec2,
+    /// Zoom at one sensor pixel per screen pixel.
+    actual_size: bool,
     flash_clip: ImageToggle,
     star_view: ImageToggle,
     tilt_view: ImageToggle,
@@ -265,6 +267,7 @@ impl App {
                 .unwrap_or_default(),
             zoom: 1.0,
             pan: Vec2::ZERO,
+            actual_size: prefs.actual_size,
             flash_clip: ImageToggle::new(prefs.flash_clip),
             star_view: ImageToggle::new(prefs.star_view),
             tilt_view: ImageToggle::new(prefs.tilt_view),
@@ -486,6 +489,9 @@ impl App {
         }
         if prefs.show_debug != old.show_debug {
             self.show_debug = prefs.show_debug;
+        }
+        if prefs.actual_size != old.actual_size {
+            self.set_actual_size(prefs.actual_size);
         }
         let reload = prefs.neutralize != old.neutralize
             || prefs.auto_stretch != old.auto_stretch
