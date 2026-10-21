@@ -13,6 +13,7 @@ const MOSAIC_GAP: f32 = 3.0;
 
 impl App {
     pub(super) fn file_list(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
             if ui
                 .button("Open…")
@@ -28,13 +29,20 @@ impl App {
             {
                 self.export(ui.ctx());
             }
-            let label = self
-                .dir
-                .as_ref()
-                .map(|d| d.display().to_string())
-                .unwrap_or_else(|| "No folder".into());
-            ui.add(egui::Label::new(egui::RichText::new(label).weak()).truncate());
+            // Pushed right in the same row (not right-to-left), so the panel can't get
+            // narrower than all three buttons.
+            let gear_side = ui.spacing().interact_size.y;
+            ui.add_space((ui.available_width() - gear_side).max(0.0));
+            if gear_button(ui).on_hover_text("Settings (Ctrl+,)").clicked() {
+                self.show_settings = true;
+            }
         });
+        let label = self
+            .dir
+            .as_ref()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|| "No folder".into());
+        ui.add(egui::Label::new(egui::RichText::new(label).weak()).truncate());
         ui.separator();
 
         let row_h = ui.spacing().interact_size.y;
@@ -127,7 +135,7 @@ impl App {
             let flash = loaded
                 .clip_overlay
                 .as_ref()
-                .filter(|_| is_current && self.flash_clip.as_ref() == Some(path))
+                .filter(|_| is_current && self.flash_clip.is_on(path))
                 .filter(|_| clip_flash_on(ui));
             let stars = self.stars.get(path);
 
@@ -160,19 +168,19 @@ impl App {
                 }
 
                 if is_current
-                    && self.star_view.as_ref() == Some(path)
+                    && self.star_view.is_on(path)
                     && let Some(st) = stars
                 {
                     draw::stars(&painter, rect, img_rect, loaded.src_size, &st.stats);
                 }
                 if is_current
-                    && self.tilt_view.as_ref() == Some(path)
+                    && self.tilt_view.is_on(path)
                     && let Some(tilt) = stars.and_then(|s| s.tilt.as_ref())
                 {
                     draw::tilt(&painter, img_rect, loaded.src_size, tilt);
                 }
                 if is_current
-                    && self.sky_view.as_ref() == Some(path)
+                    && self.sky_view.is_on(path)
                     && let Some(Ok(sol)) = stars.map(|s| &s.solution)
                 {
                     draw::sky(&painter, rect, img_rect, loaded.src_size, &sol.wcs);
@@ -386,6 +394,22 @@ fn clip_flash_on(ui: &egui::Ui) -> bool {
     phase < 0.5
 }
 
+/// The bundled fonts have no gear glyph.
+fn gear_button(ui: &mut egui::Ui) -> egui::Response {
+    let side = ui.spacing().interact_size.y;
+    let response = ui.add(egui::Button::new("").min_size(Vec2::splat(side)));
+    let color = ui.style().interact(&response).fg_stroke.color;
+    let (center, r) = (response.rect.center(), side * 0.3);
+    let painter = ui.painter();
+    for i in 0..8 {
+        let dir = Vec2::angled(i as f32 * std::f32::consts::TAU / 8.0);
+        let stroke = egui::Stroke::new(r * 0.4, color);
+        painter.line_segment([center + dir * r * 0.6, center + dir * r], stroke);
+    }
+    painter.circle_stroke(center, r * 0.55, egui::Stroke::new(r * 0.4, color));
+    response
+}
+
 /// Debug lines for the shown image: geometry, timings, stretch, saturation level.
 fn debug_image(
     entry: &CacheEntry,
@@ -397,7 +421,7 @@ fn debug_image(
     let mode = if l.bin == 1 {
         "full res".to_string()
     } else {
-        format!("bin {}", l.bin)
+        format!("bin {0}x{0}", l.bin)
     };
     let pattern = l.bayer.map(|b| format!(" {b}")).unwrap_or_default();
     let star_ms = stars.map_or("…".to_string(), |s| format!("{:.0} ms", s.detect_ms));

@@ -43,6 +43,7 @@ cargo build --release
 | <kbd>E</kbd> or <kbd>Ctrl</kbd>+<kbd>S</kbd> | Export as PNG / JPEG (full resolution) |
 | <kbd>O</kbd> or <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open folder |
 | <kbd>F5</kbd> or <kbd>Ctrl</kbd>+<kbd>R</kbd> | Rescan folder |
+| <kbd>Ctrl</kbd>+<kbd>,</kbd> | Open settings |
 | <kbd>?</kbd> or <kbd>F1</kbd> | This help |
 
 On macOS, use <kbd>Cmd</kbd> instead of <kbd>Ctrl</kbd>. A folder or FITS / XISF file can also be

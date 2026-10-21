@@ -437,6 +437,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "rayon",
  "rfd",
+ "ron",
  "windows-sys 0.61.2",
  "winresource",
 ]

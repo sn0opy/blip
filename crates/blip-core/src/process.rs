@@ -146,6 +146,16 @@ pub fn preview_side(img: &Image, max_side: Option<usize>, limit: usize) -> Optio
     }
 }
 
+/// The `max_side` that bins `img` by `factor`. Bayer images bin whole 2x2 cells, so odd
+/// factors round up to the next even one.
+pub fn side_for_bin(img: &Image, factor: usize) -> usize {
+    let long = img.width.max(img.height);
+    match img.bayer {
+        Some(_) => (long / 2).div_ceil(factor.div_ceil(2).max(1)),
+        None => long.div_ceil(factor.max(1)),
+    }
+}
+
 /// The preview for a long side from [`preview_side`], and its clipped pixels.
 pub fn render_preview<P: Pixel>(
     img: &Image,
@@ -840,6 +850,28 @@ mod tests {
             assert!(planes[0].iter().all(|&v| v == 1000), "{pattern}");
             assert!(planes[1].iter().all(|v| (2000..=4000).contains(v)));
             assert!(planes[2].iter().all(|&v| v == 5000), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn side_for_bin_gives_that_bin_factor() {
+        for (w, h) in [
+            (6000, 4000),
+            (6001, 4001),
+            (4000, 6000),
+            (9576, 6388),
+            (101, 7),
+        ] {
+            for (bayer, factors) in [
+                (None, [(2, 2), (3, 3), (4, 4)]),
+                (Some("RGGB"), [(2, 2), (3, 4), (4, 4)]),
+            ] {
+                let img = image(w, h, bayer, &vec![0; w * h]);
+                for (factor, want) in factors {
+                    let (_, _, _, f) = bin_image(&img, side_for_bin(&img, factor));
+                    assert_eq!(f, want, "{w}x{h} {bayer:?} bin {factor}");
+                }
+            }
         }
     }
 

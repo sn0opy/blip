@@ -6,6 +6,7 @@ mod draw;
 mod gpu;
 mod keys;
 mod loader;
+mod prefs;
 mod texture;
 mod view;
 
@@ -18,7 +19,8 @@ use blip_core::stars::StarStats;
 use blip_core::tilt::Tilt;
 use blip_core::wcs::Wcs;
 use eframe::egui::{self, Vec2};
-use loader::{Loaded, Message, Settings};
+use loader::{Binning, Loaded, Message, Settings};
+use prefs::{BinningPref, Preferences};
 use std::any::Any;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -26,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
+pub const APP_ID: &str = "sh.sascha.blip";
 /// Previews are binned so their long side is at most this many pixels.
 const MAX_SIDE: usize = 3200;
 /// Number of rendered images kept on the GPU (binned / full resolution).
@@ -57,6 +60,41 @@ impl MeasuredStars {
             detect_ms: 0.0,
             solution: Err(reason.to_string()),
             header_wcs: None,
+        }
+    }
+}
+
+/// On for every image if `default`, except for the one it was last toggled on.
+struct ImageToggle {
+    default: bool,
+    flipped: Option<PathBuf>,
+}
+
+impl ImageToggle {
+    fn new(default: bool) -> Self {
+        Self {
+            default,
+            flipped: None,
+        }
+    }
+
+    fn is_on(&self, path: &Path) -> bool {
+        self.default != (self.flipped.as_deref() == Some(path))
+    }
+
+    fn toggle(&mut self, path: &Path) -> bool {
+        self.flip(path);
+        self.is_on(path)
+    }
+
+    /// Like `toggle`, but returns the image this reverts to the default, if any.
+    fn flip(&mut self, path: &Path) -> Option<PathBuf> {
+        match self.flipped.replace(path.to_path_buf()) {
+            Some(p) if p == path => {
+                self.flipped = None;
+                None
+            }
+            other => other,
         }
     }
 }
@@ -99,18 +137,21 @@ pub struct App {
     gpu_info: String,
     zoom: f32,
     pan: Vec2,
-    /// Per-image overlays: switching images turns them off.
-    flash_clip: Option<PathBuf>,
-    star_view: Option<PathBuf>,
-    tilt_view: Option<PathBuf>,
-    sky_view: Option<PathBuf>,
+    flash_clip: ImageToggle,
+    star_view: ImageToggle,
+    tilt_view: ImageToggle,
+    sky_view: ImageToggle,
     /// Shown without the auto stretch.
-    unstretched: Option<PathBuf>,
+    auto_stretch: ImageToggle,
     /// Star measurements, computed by the loader for every image.
     stars: HashMap<PathBuf, MeasuredStars>,
 
+    prefs: Preferences,
     confirm_delete: Option<PathBuf>,
     show_help: bool,
+    show_settings: bool,
+    /// The settings dialog's values while a slider is dragged, applied on release.
+    prefs_draft: Option<Preferences>,
     scroll_to_selected: bool,
     status: Option<Status>,
     title: String,
@@ -119,10 +160,16 @@ pub struct App {
     export_rx: Receiver<Result<String, String>>,
 }
 
-fn initial_settings() -> Settings {
+/// What `App::settings` gives every image right after start.
+fn initial_settings(prefs: &Preferences) -> Settings {
     Settings {
-        stretch: StretchParams::default(),
-        max_side: Some(MAX_SIDE),
+        stretch: StretchParams {
+            neutralize: prefs.neutralize,
+            auto_stretch: prefs.auto_stretch,
+            ..StretchParams::default()
+        }
+        .boosted(prefs.boost),
+        binning: prefs.binning.binning(),
     }
 }
 
@@ -136,9 +183,25 @@ pub fn preload(preloader: Preloader, path: PathBuf) {
             is_image(&path).then_some(path)
         };
         if let Some(first) = first {
-            preloader.preload(first, initial_settings());
+            let prefs = Preferences::load_saved(APP_ID);
+            preloader.preload(first, initial_settings(&prefs));
         }
     });
+}
+
+/// 0, then two images ahead for each one behind: 0, d, 2d, -d, 3d, 4d, -2d, …
+fn prefetch_offsets(d: isize, ahead: usize, behind: usize) -> impl Iterator<Item = isize> {
+    let mut ahead = (1..=ahead as isize).map(move |i| i * d);
+    let mut behind = (1..=behind as isize).map(move |i| -i * d);
+    let mut n = 0;
+    std::iter::once(0).chain(std::iter::from_fn(move || {
+        n += 1;
+        if n % 3 == 0 {
+            behind.next().or_else(|| ahead.next())
+        } else {
+            ahead.next().or_else(|| behind.next())
+        }
+    }))
 }
 
 fn is_image(path: &Path) -> bool {
@@ -164,7 +227,7 @@ impl App {
             cc.egui_ctx.clone(),
             texture::Uploader::new(&cc.egui_ctx, cc.wgpu_render_state.as_ref()),
         );
-        let settings = initial_settings();
+        let prefs = Preferences::load(cc.storage);
         let (export_tx, export_rx) = channel();
         let mut app = Self {
             loader,
@@ -183,12 +246,15 @@ impl App {
             shown_after: None,
             stale: None,
             tick: 0,
-            params: settings.stretch,
-            boost: 0,
-            full_res: settings.max_side.is_none(),
+            params: StretchParams {
+                neutralize: prefs.neutralize,
+                ..StretchParams::default()
+            },
+            boost: prefs.boost,
+            full_res: false,
             mosaic: false,
-            show_info: true,
-            show_debug: false,
+            show_info: prefs.show_info,
+            show_debug: prefs.show_debug,
             gpu_info: cc
                 .wgpu_render_state
                 .as_ref()
@@ -199,14 +265,17 @@ impl App {
                 .unwrap_or_default(),
             zoom: 1.0,
             pan: Vec2::ZERO,
-            flash_clip: None,
-            star_view: None,
-            tilt_view: None,
-            sky_view: None,
-            unstretched: None,
+            flash_clip: ImageToggle::new(prefs.flash_clip),
+            star_view: ImageToggle::new(prefs.star_view),
+            tilt_view: ImageToggle::new(prefs.tilt_view),
+            sky_view: ImageToggle::new(prefs.sky_view),
+            auto_stretch: ImageToggle::new(prefs.auto_stretch),
             stars: HashMap::new(),
+            prefs,
             confirm_delete: None,
             show_help: false,
+            show_settings: false,
+            prefs_draft: None,
             scroll_to_selected: false,
             status: None,
             title: String::new(),
@@ -294,11 +363,10 @@ impl App {
     /// The current image, then its neighbors (mostly ahead), with their offsets from the
     /// current one.
     fn prefetch_window(&self) -> Vec<(isize, &PathBuf)> {
-        let d = self.direction;
         let s = self.selected as isize;
-        [0, d, 2 * d, -d, 3 * d]
-            .into_iter()
+        prefetch_offsets(self.direction, self.prefs.ahead, self.prefs.behind)
             .filter_map(|o| Some((o, self.files.get(usize::try_from(s + o).ok()?)?)))
+            .take(self.cache_limit())
             .collect()
     }
 
@@ -331,10 +399,14 @@ impl App {
     fn settings(&self, path: &Path) -> Settings {
         Settings {
             stretch: StretchParams {
-                auto_stretch: self.unstretched.as_deref() != Some(path),
+                auto_stretch: self.auto_stretch.is_on(path),
                 ..self.params.boosted(self.boost)
             },
-            max_side: (!self.loads_full_res()).then_some(MAX_SIDE),
+            binning: if self.loads_full_res() {
+                Binning::Full
+            } else {
+                self.prefs.binning.binning()
+            },
         }
     }
 
@@ -342,20 +414,12 @@ impl App {
         let Some(cur) = self.current().cloned() else {
             return;
         };
-        let previous = if self.unstretched.as_ref() == Some(&cur) {
-            self.unstretched.take()
-        } else {
-            self.unstretched.replace(cur.clone())
-        };
-        if let Some(previous) = previous.filter(|p| *p != cur) {
-            self.cache.remove(&previous);
+        if let Some(reverted) = self.auto_stretch.flip(&cur) {
+            self.cache.remove(&reverted);
         }
+        let on = self.auto_stretch.is_on(&cur);
         self.stale = self.cache.remove_entry(&cur).or(self.stale.take());
-        let state = if self.unstretched.is_some() {
-            "off"
-        } else {
-            "on"
-        };
+        let state = if on { "on" } else { "off" };
         self.set_status(format!("Auto stretch {state} (A to toggle)"), Some(2.0));
         self.request_loads();
     }
@@ -412,7 +476,47 @@ impl App {
     }
 
     fn loads_full_res(&self) -> bool {
-        self.full_res || self.mosaic
+        self.full_res || self.mosaic || self.prefs.binning == BinningPref::Bin1
+    }
+
+    fn apply_prefs(&mut self, prefs: Preferences) {
+        let old = std::mem::replace(&mut self.prefs, prefs);
+        if prefs.show_info != old.show_info {
+            self.show_info = prefs.show_info;
+        }
+        if prefs.show_debug != old.show_debug {
+            self.show_debug = prefs.show_debug;
+        }
+        let reload = prefs.neutralize != old.neutralize
+            || prefs.auto_stretch != old.auto_stretch
+            || prefs.binning != old.binning
+            || prefs.boost != old.boost;
+        if prefs.neutralize != old.neutralize {
+            self.params.neutralize = prefs.neutralize;
+        }
+        for (toggle, on, was) in [
+            (&mut self.auto_stretch, prefs.auto_stretch, old.auto_stretch),
+            (&mut self.flash_clip, prefs.flash_clip, old.flash_clip),
+            (&mut self.star_view, prefs.star_view, old.star_view),
+            (&mut self.tilt_view, prefs.tilt_view, old.tilt_view),
+            (&mut self.sky_view, prefs.sky_view, old.sky_view),
+        ] {
+            if on != was {
+                *toggle = ImageToggle::new(on);
+            }
+        }
+        if prefs.boost != old.boost {
+            self.boost = prefs.boost;
+        }
+        if prefs.binning != old.binning {
+            self.full_res = false;
+        }
+        if reload {
+            self.reload_all();
+        } else if (prefs.ahead, prefs.behind) != (old.ahead, old.behind) {
+            self.evict();
+            self.request_loads();
+        }
     }
 
     /// Number of rendered images kept on the GPU.
@@ -420,7 +524,7 @@ impl App {
         if self.loads_full_res() {
             CACHE_SIZE_FULL
         } else {
-            CACHE_SIZE
+            CACHE_SIZE.max(1 + self.prefs.ahead + self.prefs.behind)
         }
     }
 
@@ -553,6 +657,7 @@ impl eframe::App for App {
         self.handle_keys(&ctx);
         self.delete_dialog(&ctx);
         self.help_dialog(&ctx);
+        self.settings_dialog(&ctx);
 
         egui::Panel::left("files")
             .resizable(true)
@@ -565,6 +670,7 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.prefs.save(storage);
         if let Some(dir) = &self.dir {
             storage.set_string("last_dir", dir.display().to_string());
         }
@@ -585,5 +691,31 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
         s.clone()
     } else {
         "unknown panic".into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefetch_takes_two_ahead_per_one_behind() {
+        let offsets = |d, ahead, behind| prefetch_offsets(d, ahead, behind).collect::<Vec<_>>();
+        assert_eq!(offsets(1, 3, 1), [0, 1, 2, -1, 3]);
+        assert_eq!(offsets(-1, 4, 2), [0, -1, -2, 1, -3, -4, 2]);
+        assert_eq!(offsets(1, 1, 3), [0, 1, -1, -2, -3]);
+        assert_eq!(offsets(1, 0, 0), [0]);
+    }
+
+    #[test]
+    fn toggling_another_image_reverts_the_previous_one() {
+        let (a, b) = (Path::new("a"), Path::new("b"));
+        let mut t = ImageToggle::new(true);
+        assert_eq!(t.flip(a), None);
+        assert!(!t.is_on(a));
+        assert_eq!(t.flip(b), Some(a.to_path_buf()));
+        assert!(t.is_on(a) && !t.is_on(b));
+        assert_eq!(t.flip(b), None);
+        assert!(t.is_on(b));
     }
 }

@@ -1,10 +1,11 @@
 use super::App;
+use super::prefs::BinningPref;
 use blip_core::process::{BOOST_STEP_PERCENT, MAX_BOOST};
 use eframe::egui::{self, Key, Modifiers, Vec2};
 
 impl App {
     pub(super) fn handle_keys(&mut self, ctx: &egui::Context) {
-        if self.confirm_delete.is_some() || self.show_help {
+        if self.confirm_delete.is_some() || self.show_help || self.show_settings {
             return;
         }
         let pressed = |key: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key));
@@ -12,6 +13,10 @@ impl App {
 
         if pressed(Key::Questionmark) || pressed(Key::F1) {
             self.show_help = true;
+            return;
+        }
+        if pressed_cmd(Key::Comma) {
+            self.show_settings = true;
             return;
         }
         if pressed(Key::ArrowDown)
@@ -77,17 +82,7 @@ impl App {
             self.toggle_mosaic();
         }
         if pressed(Key::B) {
-            let was_full = self.loads_full_res();
-            self.full_res = !self.full_res;
-            let mode = if self.full_res {
-                "Full resolution"
-            } else {
-                "Binned preview"
-            };
-            self.set_status(format!("{mode} (B to toggle)"), Some(2.0));
-            if self.loads_full_res() != was_full {
-                self.reload_all();
-            }
+            self.toggle_full_res();
         }
         if pressed(Key::Num0) || pressed(Key::F) {
             self.zoom = 1.0;
@@ -118,58 +113,65 @@ impl App {
         self.set_status(text, Some(2.0));
     }
 
-    fn toggle_clip_flash(&mut self) {
-        let cur = self.current().cloned();
-        if self.flash_clip.is_some() && self.flash_clip == cur {
-            self.flash_clip = None;
+    fn toggle_full_res(&mut self) {
+        if self.prefs.binning == BinningPref::Bin1 {
+            self.set_status("Binning is set to 1x1 in the settings".into(), Some(2.5));
             return;
         }
-        let Some(cur) = cur else { return };
-        if self
-            .cache
-            .get(&cur)
-            .is_some_and(|e| e.loaded.clip_overlay.is_none())
+        let was_full = self.loads_full_res();
+        self.full_res = !self.full_res;
+        let mode = if self.full_res {
+            "Full resolution"
+        } else {
+            "Binned preview"
+        };
+        self.set_status(mode.into(), Some(2.0));
+        if self.loads_full_res() != was_full {
+            self.reload_all();
+        }
+    }
+
+    fn toggle_clip_flash(&mut self) {
+        let Some(cur) = self.current().cloned() else {
+            return;
+        };
+        if self.flash_clip.toggle(&cur)
+            && self
+                .cache
+                .get(&cur)
+                .is_some_and(|e| e.loaded.clip_overlay.is_none())
         {
             self.set_status("No clipped pixels in this image".into(), Some(2.0));
         }
-        self.flash_clip = Some(cur);
     }
 
     fn toggle_star_view(&mut self) {
-        let cur = self.current().cloned();
-        self.star_view = if self.star_view.is_some() && self.star_view == cur {
-            None
-        } else {
-            cur
-        };
+        if let Some(cur) = self.current().cloned() {
+            self.star_view.toggle(&cur);
+        }
     }
 
     fn toggle_tilt_view(&mut self) {
-        let cur = self.current().cloned();
-        if self.tilt_view.is_some() && self.tilt_view == cur {
-            self.tilt_view = None;
+        let Some(cur) = self.current().cloned() else {
             return;
-        }
-        let Some(cur) = cur else { return };
-        if self.stars.get(&cur).is_some_and(|s| s.tilt.is_none()) {
+        };
+        if self.tilt_view.toggle(&cur) && self.stars.get(&cur).is_some_and(|s| s.tilt.is_none()) {
             self.set_status("Not enough stars to measure tilt".into(), Some(2.5));
         }
-        self.tilt_view = Some(cur);
     }
 
     fn toggle_sky_view(&mut self) {
-        let cur = self.current().cloned();
-        if self.sky_view.is_some() && self.sky_view == cur {
-            self.sky_view = None;
+        let Some(cur) = self.current().cloned() else {
+            return;
+        };
+        if !self.sky_view.toggle(&cur) {
             return;
         }
-        let Some(cur) = cur else { return };
         match self.stars.get(&cur).map(|s| &s.solution) {
             Some(Err(e)) => self.set_status(format!("Plate solve failed: {e}"), Some(4.0)),
             None => self.set_status("Plate solving…".into(), Some(2.0)),
             Some(Ok(_)) => {}
         }
-        self.sky_view = Some(cur);
     }
 
     fn toggle_mosaic(&mut self) {

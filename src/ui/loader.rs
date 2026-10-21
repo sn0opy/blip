@@ -39,8 +39,24 @@ const KEEP_RAW: usize = 3;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
     pub stretch: process::StretchParams,
-    /// `None` = full resolution, otherwise bin to this long side.
-    pub max_side: Option<usize>,
+    pub binning: Binning,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Binning {
+    MaxSide(usize),
+    Factor(usize),
+    Full,
+}
+
+impl Binning {
+    fn max_side(self, img: &image::Image) -> Option<usize> {
+        match self {
+            Binning::MaxSide(side) => Some(side),
+            Binning::Factor(factor) => Some(process::side_for_bin(img, factor)),
+            Binning::Full => None,
+        }
+    }
 }
 
 pub struct Loaded {
@@ -249,6 +265,11 @@ impl Loader {
         self.shared.set_queue(images, stars, waiting);
     }
 
+    /// The texture size limit images are rendered for, once attached.
+    pub fn max_texture_side(&self) -> Option<usize> {
+        (self.shared.gpu.get()).map(|g| g.uploader.max_texture_side())
+    }
+
     pub fn preloader(&self) -> Preloader {
         Preloader(self.shared.clone())
     }
@@ -443,7 +464,7 @@ fn load(
         return None;
     }
     let (max_texture, mipmaps) = limits(uploader);
-    if prepared.side != process::preview_side(&img, settings.max_side, max_texture) {
+    if prepared.side != process::preview_side(&img, settings.binning.max_side(&img), max_texture) {
         prepared = prepare(&img, &clip, settings, max_texture, mipmaps);
         if !wanted() {
             return None;
@@ -511,7 +532,7 @@ fn prepare(
     let t = Instant::now();
     // "Full resolution" falls back to the least binning that fits the GPU's texture size
     // limit (typically 8192 or 16384 px).
-    let side = process::preview_side(img, settings.max_side, max_texture);
+    let side = process::preview_side(img, settings.binning.max_side(img), max_texture);
     let (mut r, clip_points) =
         process::render_preview::<process::Rgba8>(img, clip, side, settings.stretch);
     let process_ms = ms(t);

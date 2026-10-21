@@ -38,7 +38,7 @@ fn main() -> eframe::Result {
     let wgpu_options = ui::wgpu_options(args.backend.as_deref(), args.present.as_deref());
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("blip")
-        .with_app_id("sh.sascha.blip")
+        .with_app_id(ui::APP_ID)
         .with_inner_size([1400.0, 900.0])
         .with_drag_and_drop(true);
     if let Ok(icon) =

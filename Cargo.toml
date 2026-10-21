@@ -19,6 +19,7 @@ eframe = { version = "0.37.0", default-features = false, features = [
 ] }
 rayon.workspace = true
 rfd = "0.17.2"
+ron = "0.12.2"
 
 # With eframe's default features off, Linux needs its windowing backends enabled explicitly.
 [target.'cfg(target_os = "linux")'.dependencies]
