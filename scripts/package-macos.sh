@@ -35,4 +35,4 @@ cargo packager --release --target universal-apple-darwin --formats app,dmg
 
 version=$(cargo pkgid | sed 's/.*[@#]//')
 # cargo-packager names the disk image blip_<version>_<arch>.dmg.
-mv dist/*.dmg "dist/blip-${version}-macos-universal.dmg"
+mv -f "dist/blip_${version}_universal.dmg" "dist/blip-${version}-macos-universal.dmg"

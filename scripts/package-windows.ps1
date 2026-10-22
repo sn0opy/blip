@@ -31,7 +31,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $version = (cargo pkgid) -replace '.*[@#]', ''
 # cargo-packager names the installer blip_<version>_x64-setup.exe.
-Move-Item "dist\*-setup.exe" "dist\blip-$version-windows-x64-setup.exe" -Force
+Move-Item "dist\blip_${version}_x64-setup.exe" "dist\blip-$version-windows-x64-setup.exe" -Force
 $stage = "target\windows-portable"
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory $stage | Out-Null
