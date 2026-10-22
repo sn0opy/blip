@@ -342,8 +342,8 @@ fn convert_i16(mut data: Vec<u16>, l: &Layout) -> Vec<u16> {
 
 /// Map samples (decoded by `read`, NaN = undefined) through BSCALE/BZERO onto
 /// 0..=65535 without materializing them as f64. Data already in [0, 1] (typical for
-/// stacked float images), [0, 255] for 8-bit or [0, 65535] keeps its scale; anything
-/// else is min/max scaled.
+/// stacked float images, which may stray slightly outside), [0, 255] for 8-bit or
+/// [0, 65535] keeps its scale; anything else is min/max scaled.
 fn normalize<const N: usize>(
     raw: &[u8],
     l: &Layout,
@@ -352,26 +352,36 @@ fn normalize<const N: usize>(
     let (bzero, bscale) = (l.bzero, l.bscale);
     let value = |c: &[u8; N]| read(*c) * bscale + bzero;
     let chunks = raw.as_chunks::<N>().0;
-    let (lo, hi) = chunks
+    let (lo, hi, finite, outside_unit) = chunks
         .par_iter()
         .fold(
-            || (f64::MAX, f64::MIN),
-            |(lo, hi), c| {
+            || (f64::MAX, f64::MIN, 0usize, 0usize),
+            |(lo, hi, n, out), c| {
                 let v = value(c);
                 if v.is_finite() {
-                    (lo.min(v), hi.max(v))
+                    let out = out + !(0.0..=1.0).contains(&v) as usize;
+                    (lo.min(v), hi.max(v), n + 1, out)
                 } else {
-                    (lo, hi)
+                    (lo, hi, n, out)
                 }
             },
         )
-        .reduce(|| (f64::MAX, f64::MIN), |a, b| (a.0.min(b.0), a.1.max(b.1)));
-    let (lo, hi) = if lo >= 0.0 && hi <= 1.0 {
+        .reduce(
+            || (f64::MAX, f64::MIN, 0, 0),
+            |a, b| (a.0.min(b.0), a.1.max(b.1), a.2 + b.2, a.3 + b.3),
+        );
+    let float = l.bitpix < 0;
+    let mostly_unit = if float {
+        outside_unit as f64 <= 0.001 * finite as f64
+    } else {
+        outside_unit == 0
+    };
+    let (lo, hi) = if mostly_unit {
         (0.0, 1.0)
     } else if l.bitpix == 8 && lo >= 0.0 && hi <= 255.0 {
         // Same scale as the unscaled 8-bit fast path (v << 8).
         (0.0, 65535.0 / 256.0)
-    } else if lo >= 0.0 && hi <= 65535.0 {
+    } else if lo >= 0.0 && hi <= 65535.0 && (hi > 255.0 || !float) {
         (0.0, 65535.0)
     } else {
         (lo, hi.max(lo + f64::EPSILON))
@@ -617,6 +627,21 @@ mod tests {
             parse(&image(-64, 3, 1, &[], &raw)).unwrap().data,
             [0, 65535, 0]
         );
+    }
+
+    #[test]
+    fn float_ranges() {
+        let parse_f32 = |vals: &[f32]| {
+            let raw = be(vals, f32::to_be_bytes);
+            parse(&image(-32, vals.len(), 1, &[], &raw)).unwrap().data
+        };
+        let mut unit = vec![0.5f32; 2000];
+        unit[0] = 1.000_001;
+        unit[1] = -0.000_01;
+        let data = parse_f32(&unit);
+        assert_eq!((data[0], data[1], data[2]), (65535, 0, 32767));
+        assert_eq!(parse_f32(&[100.0, 1000.0, 2.5]), [100, 1000, 2]);
+        assert_eq!(parse_f32(&[0.0, 1.5, 3.0]), [0, 32767, 65535]);
     }
 
     #[test]
