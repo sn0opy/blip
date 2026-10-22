@@ -230,10 +230,15 @@ impl App {
                 debug_drawn = true;
             }
         } else if self.files.is_empty() {
+            let text = if self.scanner.busy() {
+                "Reading folder…"
+            } else {
+                "Open a folder (O) or drop a folder / FITS / XISF file here"
+            };
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "Open a folder (O) or drop a folder / FITS / XISF file here",
+                text,
                 egui::FontId::proportional(18.0),
                 Color32::GRAY,
             );

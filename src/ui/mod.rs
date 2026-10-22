@@ -7,12 +7,14 @@ mod gpu;
 mod keys;
 mod loader;
 mod prefs;
+mod scan;
 mod texture;
 mod tree;
 mod view;
 
 pub use gpu::wgpu_options;
 pub use loader::{Loader, Preloader};
+pub use scan::Scanner;
 
 use blip_core::process::StretchParams;
 use blip_core::solve::Solution;
@@ -21,6 +23,7 @@ use blip_core::tilt::Tilt;
 use eframe::egui::{self, Vec2};
 use loader::{Binning, Loaded, Message, Settings};
 use prefs::{BinningPref, Preferences};
+use scan::{Listing, is_image, list_images};
 use std::any::Any;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -37,7 +40,6 @@ const MAX_SIDE: usize = 3200;
 const CACHE_SIZE: usize = 10;
 const CACHE_SIZE_FULL: usize = 4;
 const MIN_CACHE: usize = 2;
-const EXTENSIONS: [&str; 4] = ["fit", "fits", "fts", "xisf"];
 const STATUS_FADE: f32 = 0.8;
 
 /// A message in the bottom-left corner. Transient ones fade out after `ttl` seconds.
@@ -107,6 +109,7 @@ struct CacheEntry {
 
 pub struct App {
     loader: Loader,
+    scanner: Scanner,
     dir: Option<PathBuf>,
     /// Last folder of a previous session; only the Open dialog's start location.
     last_dir: Option<PathBuf>,
@@ -179,19 +182,25 @@ fn initial_settings(prefs: &Preferences) -> Settings {
     }
 }
 
-pub fn preload(preloader: Preloader, path: PathBuf) {
+pub fn preload(preloader: Preloader, scanner: Scanner, path: PathBuf) {
     std::thread::spawn(move || {
         let prefs = Preferences::load_saved(APP_ID);
-        let first = if path.is_dir() {
-            list_images(&path, prefs.subfolder_depth)
-                .ok()
-                .and_then(|files| files.into_iter().next())
-        } else {
-            is_image(&path).then_some(path)
-        };
-        if let Some(first) = first {
-            preloader.preload(first, initial_settings(&prefs));
+        let depth = prefs.subfolder_depth;
+        if !path.is_dir() {
+            if is_image(&path) {
+                preloader.preload(path.clone(), initial_settings(&prefs));
+            }
+            scanner.scan(path.parent().unwrap_or(Path::new("")), depth);
+            return;
         }
+        let Some(id) = scanner.begin(&path, depth) else {
+            return;
+        };
+        let files = list_images(&path, depth);
+        if let Some(first) = files.as_ref().ok().and_then(|f| f.first()) {
+            preloader.preload(first.clone(), initial_settings(&prefs));
+        }
+        scanner.finish(id, files);
     });
 }
 
@@ -210,40 +219,15 @@ fn prefetch_offsets(d: isize, ahead: usize, behind: usize) -> impl Iterator<Item
     }))
 }
 
-fn is_image(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
-}
-
-/// Images of the subfolders come first, folder by folder, then the folder's own.
-/// Unreadable subfolders are skipped.
-fn list_images(dir: &Path, subfolder_depth: usize) -> std::io::Result<Vec<PathBuf>> {
-    let mut subfolders = Vec::new();
-    let mut images = Vec::new();
-    for path in std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-    {
-        if is_image(&path) {
-            images.push(path);
-        } else if subfolder_depth > 0 && path.is_dir() {
-            subfolders.push(path);
-        }
-    }
-    let by_name = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
-    subfolders.sort_by_key(by_name);
-    images.sort_by_key(by_name);
-    let mut listed: Vec<PathBuf> = (subfolders.iter())
-        .flat_map(|folder| list_images(folder, subfolder_depth - 1).unwrap_or_default())
-        .collect();
-    listed.extend(images);
-    Ok(listed)
-}
-
 impl App {
-    pub fn new(cc: &eframe::CreationContext, start: Option<PathBuf>, loader: Loader) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext,
+        start: Option<PathBuf>,
+        loader: Loader,
+        scanner: Scanner,
+    ) -> Self {
         cc.egui_ctx.set_theme(egui::Theme::Dark);
+        scanner.attach(cc.egui_ctx.clone());
         loader.attach(
             cc.egui_ctx.clone(),
             texture::Uploader::new(&cc.egui_ctx, cc.wgpu_render_state.as_ref()),
@@ -253,6 +237,7 @@ impl App {
         let gpu_memory = cc.wgpu_render_state.as_ref().map(gpu::MemoryQuery::new);
         let mut app = Self {
             loader,
+            scanner,
             dir: None,
             last_dir: cc
                 .storage
@@ -318,7 +303,7 @@ impl App {
         self.files.get(self.selected)
     }
 
-    /// Open a folder, or a file (opens its folder and selects it).
+    /// Open a folder, or a file (shown right away, then selected in its folder's listing).
     fn open(&mut self, path: &Path) {
         let (dir, file) = if path.is_dir() {
             (path.to_path_buf(), None)
@@ -328,24 +313,32 @@ impl App {
         };
         self.tree = FolderTree::new(&dir);
         self.dir = Some(dir);
+        self.files = file.into_iter().filter(|f| is_image(f)).collect();
+        self.tree.rebuild(&self.files);
+        self.selected = 0;
+        self.direction = 1;
         self.cache.clear();
         self.errors.clear();
         self.stars.clear();
         self.shown = None;
         self.image_bytes = 0;
         self.memory_cap = None;
+        self.request_loads();
         self.refresh();
-        if let Some(f) = file
-            && let Some(i) = self.files.iter().position(|p| *p == f)
-        {
-            self.select(i);
-        }
     }
 
     fn refresh(&mut self) {
-        let Some(dir) = &self.dir else { return };
+        if let Some(dir) = &self.dir {
+            self.scanner.scan(dir, self.prefs.subfolder_depth);
+        }
+    }
+
+    fn apply_listing(&mut self, listing: Listing) {
+        if self.dir.as_ref() != Some(&listing.dir) || listing.depth != self.prefs.subfolder_depth {
+            return;
+        }
         let current = self.current().cloned();
-        self.files = match list_images(dir, self.prefs.subfolder_depth) {
+        self.files = match listing.files {
             Ok(files) => {
                 if self
                     .status
@@ -468,8 +461,12 @@ impl App {
         self.request_loads();
     }
 
-    /// Collect finished background work: previews, star measurements, exports.
+    /// Collect finished background work: folder listings, previews, star measurements,
+    /// exports.
     fn poll_background(&mut self) {
+        if let Some(listing) = self.scanner.take() {
+            self.apply_listing(listing);
+        }
         let limit = self.cache_limit();
         let mut loaded_any = false;
         while let Some(msg) = self.loader.try_recv() {

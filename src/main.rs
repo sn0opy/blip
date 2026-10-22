@@ -53,13 +53,16 @@ fn main() -> eframe::Result {
     };
     let start = args.start;
     let loader = ui::Loader::new();
+    let scanner = ui::Scanner::default();
     if let Some(path) = &start {
-        ui::preload(loader.preloader(), path.clone());
+        ui::preload(loader.preloader(), scanner.clone(), path.clone());
     }
     #[cfg(target_os = "macos")]
     {
-        let preloader = loader.preloader();
-        macos::install_open_handler(move |path| ui::preload(preloader.clone(), path));
+        let (preloader, scanner) = (loader.preloader(), scanner.clone());
+        macos::install_open_handler(move |path| {
+            ui::preload(preloader.clone(), scanner.clone(), path)
+        });
     }
     eframe::run_native(
         "blip",
@@ -69,7 +72,7 @@ fn main() -> eframe::Result {
             macos::set_context(cc.egui_ctx.clone());
             #[cfg(windows)]
             windows::install_move_handler(cc);
-            Ok(Box::new(ui::App::new(cc, start, loader)))
+            Ok(Box::new(ui::App::new(cc, start, loader, scanner)))
         }),
     )
 }
