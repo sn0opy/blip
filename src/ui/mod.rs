@@ -6,6 +6,7 @@ mod draw;
 mod gpu;
 mod keys;
 mod loader;
+mod menu;
 mod prefs;
 mod scan;
 mod texture;
@@ -54,6 +55,7 @@ pub struct MeasuredStars {
     tilt: Option<Tilt>,
     detect_ms: f64,
     solution: Result<Solution, String>,
+    focal_length_mm: Option<f64>,
 }
 
 impl MeasuredStars {
@@ -63,6 +65,7 @@ impl MeasuredStars {
             tilt: None,
             detect_ms: 0.0,
             solution: Err(reason.to_string()),
+            focal_length_mm: None,
         }
     }
 }
@@ -154,6 +157,8 @@ pub struct App {
     auto_stretch: ImageToggle,
     /// Star measurements, computed by the loader for every image.
     stars: HashMap<PathBuf, MeasuredStars>,
+    /// The file whose context menu is open; its stars are measured first.
+    menu_file: Option<PathBuf>,
 
     prefs: Preferences,
     confirm_delete: Option<PathBuf>,
@@ -282,6 +287,7 @@ impl App {
             sky_view: ImageToggle::new(prefs.sky_view),
             auto_stretch: ImageToggle::new(prefs.auto_stretch),
             stars: HashMap::new(),
+            menu_file: None,
             prefs,
             confirm_delete: None,
             show_help: false,
@@ -394,7 +400,8 @@ impl App {
     }
 
     /// Queue the current image first, then prefetch neighbors, and measure stars of
-    /// the same files where still missing.
+    /// the same files where still missing. The file with the open menu is measured
+    /// before anything else.
     fn request_loads(&mut self) {
         self.memory_budget = self.gpu_memory.as_ref().and_then(gpu::MemoryQuery::budget);
         let window: Vec<&PathBuf> = (self.prefetch_window().into_iter())
@@ -410,6 +417,7 @@ impl App {
         };
         let images = missing(&|p| self.cache.contains_key(p));
         let stars = missing(&|p| self.stars.contains_key(p));
+        let urgent_stars = (self.menu_file.clone()).filter(|p| !self.stars.contains_key(p));
         let waiting = self.current().is_some_and(|c| images.first() == Some(c));
         let images = (images.into_iter())
             .map(|p| {
@@ -417,7 +425,7 @@ impl App {
                 (p, settings)
             })
             .collect();
-        self.loader.set_queue(images, stars, waiting);
+        self.loader.set_queue(images, stars, urgent_stars, waiting);
     }
 
     fn settings(&self, path: &Path) -> Settings {
@@ -665,11 +673,14 @@ impl App {
         }
     }
 
+    fn export_current(&mut self, ctx: &egui::Context) {
+        if let Some(src) = self.current().cloned() {
+            self.export(ctx, src);
+        }
+    }
+
     /// Ask for a target file, then export at full resolution in the background.
-    fn export(&mut self, ctx: &egui::Context) {
-        let Some(src) = self.current().cloned() else {
-            return;
-        };
+    fn export(&mut self, ctx: &egui::Context, src: PathBuf) {
         let stem = src
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())

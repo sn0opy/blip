@@ -16,6 +16,7 @@ eframe = { version = "0.37.0", default-features = false, features = [
     "accesskit",
     "persistence",
     "clipboard",
+    "links",
 ] }
 rayon.workspace = true
 rfd = "0.17.2"

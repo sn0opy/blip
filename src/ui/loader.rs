@@ -2,7 +2,8 @@
 //! the most recently requested one first.
 //!
 //! Star measurement and plate solving are a separate, lower-priority job: workers only
-//! measure stars when no image is waiting, so it never delays an image. It needs the
+//! measure stars when no image is waiting, so it never delays an image. The exception is
+//! an urgent star job, which someone is waiting for: it goes before any image. It needs the
 //! raw data, so a loaded image whose stars are still wanted keeps it in a small store
 //! (at most [`KEEP_RAW`] images; the least important goes first, and anything no longer
 //! wanted goes on every queue change). A star job whose data is gone reads the file
@@ -136,6 +137,7 @@ struct Queue {
     waiting_for: Option<Job>,
     wanted_stars: Vec<PathBuf>,
     stars: VecDeque<PathBuf>,
+    urgent_stars: Option<PathBuf>,
     raw: Vec<Raw>,
     /// What each worker is running.
     working: [Option<Work>; WORKERS],
@@ -151,6 +153,15 @@ impl Queue {
 
     fn running_stars(&self, path: &Path) -> bool {
         (self.working.iter()).any(|w| matches!(w, Some(Work::Stars(p)) if p == path))
+    }
+
+    /// Not while its image loads, which keeps the raw data for it.
+    fn urgent_star_job(&mut self) -> Option<PathBuf> {
+        let path = self.urgent_stars.as_ref()?;
+        if self.running_images().any(|j| j.path == *path) {
+            return None;
+        }
+        self.urgent_stars.take()
     }
 
     /// The most important star job that doesn't wait for its image to load.
@@ -201,7 +212,17 @@ impl Shared {
         self.queue.lock().unwrap()
     }
 
-    fn set_queue(&self, images: Vec<(PathBuf, Settings)>, stars: Vec<PathBuf>, waiting: bool) {
+    fn set_queue(
+        &self,
+        images: Vec<(PathBuf, Settings)>,
+        mut stars: Vec<PathBuf>,
+        urgent_stars: Option<PathBuf>,
+        waiting: bool,
+    ) {
+        if let Some(p) = &urgent_stars {
+            stars.retain(|s| s != p);
+            stars.insert(0, p.clone());
+        }
         let mut q = self.lock();
         q.generation += 1;
         q.wanted_images = (images.into_iter())
@@ -212,8 +233,9 @@ impl Shared {
             .filter(|j| !q.running_images().any(|r| r == *j))
             .cloned()
             .collect();
+        q.urgent_stars = urgent_stars.filter(|p| !q.running_stars(p));
         q.stars = (stars.iter())
-            .filter(|p| !q.running_stars(p))
+            .filter(|p| !q.running_stars(p) && q.urgent_stars.as_ref() != Some(*p))
             .cloned()
             .collect();
         q.wanted_stars = stars;
@@ -259,10 +281,17 @@ impl Loader {
     }
 
     /// Replace all pending work: `images` to load and `stars` to measure, each in
-    /// priority order. Running jobs that are still wanted continue. `waiting`: the first
-    /// image is the one on screen; nothing else starts while it loads.
-    pub fn set_queue(&self, images: Vec<(PathBuf, Settings)>, stars: Vec<PathBuf>, waiting: bool) {
-        self.shared.set_queue(images, stars, waiting);
+    /// priority order, and `urgent_stars` to measure before anything else. Running jobs
+    /// that are still wanted continue. `waiting`: the first image is the one on screen;
+    /// nothing but the urgent star job starts while it loads.
+    pub fn set_queue(
+        &self,
+        images: Vec<(PathBuf, Settings)>,
+        stars: Vec<PathBuf>,
+        urgent_stars: Option<PathBuf>,
+        waiting: bool,
+    ) {
+        self.shared.set_queue(images, stars, urgent_stars, waiting);
     }
 
     /// The texture size limit images are rendered for, once attached.
@@ -283,7 +312,7 @@ impl Loader {
         Status {
             workers: q.working.clone(),
             queued_images: q.images.len(),
-            queued_stars: q.stars.len(),
+            queued_stars: q.stars.len() + usize::from(q.urgent_stars.is_some()),
             raw_images: q.raw.len(),
             raw_bytes: q.raw.iter().map(|r| size_of_val(&r.img.data[..])).sum(),
         }
@@ -297,7 +326,8 @@ impl Preloader {
     /// Does nothing once anything was queued.
     pub fn preload(&self, path: PathBuf, settings: Settings) {
         if self.0.lock().generation == 0 {
-            self.0.set_queue(vec![(path, settings)], Vec::new(), true);
+            self.0
+                .set_queue(vec![(path, settings)], Vec::new(), None, true);
         }
     }
 }
@@ -314,6 +344,11 @@ impl Worker {
             let (task, generation) = {
                 let mut q = self.shared.lock();
                 loop {
+                    if let Some(path) = q.urgent_star_job() {
+                        q.working[self.id] = Some(Work::Stars(path.clone()));
+                        let raw = q.take_raw(&path);
+                        break (Task::Stars(path, raw), q.generation);
+                    }
                     let busy = (q.waiting_for.as_ref())
                         .is_some_and(|j| q.running_images().any(|r| r == j));
                     if busy {
@@ -417,11 +452,14 @@ impl Worker {
                 img.height,
                 &Hint::from_header(&img),
             );
+            let focal_length_mm =
+                (solution.as_ref().ok()).and_then(|s| solve::focal_length_mm(&img, &s.wcs));
             Some(MeasuredStars {
                 stats,
                 tilt,
                 detect_ms,
                 solution,
+                focal_length_mm,
             })
         }))
         .unwrap_or_else(|panic| {
@@ -580,5 +618,58 @@ fn prepare(
         overlay,
         process_ms,
         mips_ms: ms(t),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shared() -> Shared {
+        Shared {
+            queue: Mutex::new(Queue::default()),
+            wake: Condvar::new(),
+            gpu: OnceLock::new(),
+        }
+    }
+
+    fn settings() -> Settings {
+        Settings {
+            stretch: process::StretchParams::default(),
+            binning: Binning::Full,
+        }
+    }
+
+    #[test]
+    fn urgent_stars_go_first_but_wait_for_their_running_image() {
+        let shared = shared();
+        let [a, b, c] = ["a", "b", "c"].map(PathBuf::from);
+        let images = vec![(a.clone(), settings()), (c.clone(), settings())];
+        let stars = vec![a.clone(), b.clone(), c.clone()];
+        shared.set_queue(images, stars, Some(c.clone()), true);
+
+        let mut q = shared.lock();
+        assert_eq!(q.wanted_stars, [c.clone(), a.clone(), b.clone()]);
+        assert_eq!(q.stars, [a, b]);
+        q.working[0] = Some(Work::Image(Job {
+            path: c.clone(),
+            settings: settings(),
+        }));
+        assert_eq!(q.urgent_star_job(), None);
+        q.working[0] = None;
+        assert_eq!(q.urgent_star_job(), Some(c));
+        assert_eq!(q.urgent_star_job(), None);
+    }
+
+    #[test]
+    fn a_running_star_job_is_not_queued_again_as_urgent() {
+        let shared = shared();
+        let a = PathBuf::from("a");
+        shared.lock().working[1] = Some(Work::Stars(a.clone()));
+        shared.set_queue(Vec::new(), Vec::new(), Some(a.clone()), false);
+        let q = shared.lock();
+        assert_eq!(q.urgent_stars, None);
+        assert!(q.stars.is_empty());
+        assert_eq!(q.wanted_stars, [a]);
     }
 }

@@ -2,6 +2,8 @@
 //! WebAssembly build (`web/`).
 
 #[cfg(feature = "solve")]
+pub mod astrobin;
+#[cfg(feature = "solve")]
 pub mod catalog;
 #[cfg(feature = "solve")]
 pub mod dso;

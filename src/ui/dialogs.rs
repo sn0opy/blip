@@ -10,6 +10,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Home / End", "First / last image"),
     ("Delete / Backspace", "Delete file permanently (asks first)"),
     ("Wheel / drag", "Zoom / pan (kept while blinking)"),
+    ("Right-click file", "Plate solve, sky links, file actions"),
     ("Double-click, F, 0", "Reset zoom"),
     ("Z", "Zoom to 1:1"),
     ("A", "Toggle auto stretch for this image"),

@@ -94,7 +94,7 @@ impl App {
             self.pick_folder();
         }
         if pressed_cmd(Key::S) || pressed(Key::E) {
-            self.export(ctx);
+            self.export_current(ctx);
         }
     }
 

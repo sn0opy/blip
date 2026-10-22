@@ -27,7 +27,7 @@ impl App {
                 .on_hover_text("Export stretched image as PNG/JPEG at full resolution (E)")
                 .clicked()
             {
-                self.export(ui.ctx());
+                self.export_current(ui.ctx());
             }
             // Pushed right in the same row (not right-to-left), so the panel can't get
             // narrower than all three buttons.
@@ -71,6 +71,8 @@ impl App {
             self.scroll_to_selected = false;
         }
         let mut clicked = None;
+        let mut menu_file = None;
+        let mut menu_action = None;
         area.id_salt("file_list_scroll")
             .show_rows(ui, row_h, rows.len(), |ui, range| {
                 for row in &rows[range] {
@@ -78,11 +80,20 @@ impl App {
                         .tree_row_button(ui, row)
                         .wrap_mode(egui::TextWrapMode::Extend)
                         .min_size(Vec2::new(ui.available_width(), row_h));
-                    if ui.add(button).clicked() {
+                    let response = ui.add(button);
+                    if response.clicked() {
                         clicked = Some((*row).clone());
+                    }
+                    if let Row::Image { index, .. } = row {
+                        let path = &self.files[*index];
+                        response.context_menu(|ui| {
+                            menu_action = self.file_menu(ui, path);
+                            menu_file = Some(path.clone());
+                        });
                     }
                 }
             });
+        self.handle_file_menu(ui.ctx(), menu_file, menu_action);
         match clicked {
             Some(Row::Image { index, .. }) => self.select(index),
             Some(Row::Folder { path, .. }) => self.tree.toggle(&path),

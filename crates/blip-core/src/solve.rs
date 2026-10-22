@@ -22,6 +22,7 @@ const MIN_MATCHES: usize = 8;
 const TEST_RADIUS_PX: f64 = 6.0;
 const FIT_RADIUS_PX: f64 = 2.5;
 const SEARCH_RADIUS_DEG: f64 = 3.0;
+const ARCSEC_PER_MILLIRADIAN: f64 = 206.264_806;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Hint {
@@ -48,12 +49,11 @@ impl Hint {
         let ra_hours = sexagesimal("OBJCTRA");
         add(ra_hours.map(|h| h * 15.0).zip(sexagesimal("OBJCTDEC")));
 
-        const ARCSEC_PER_MILLIRADIAN: f64 = 206.264_806;
         let arcsec_per_px = img
             .get_f64("SCALE")
             .or(img.get_f64("PIXSCALE"))
             .or_else(|| {
-                let pixel_um = img.get_f64("XPIXSZ").or(img.get_f64("PIXSIZE1"))?;
+                let pixel_um = pixel_size_um(img)?;
                 let focal_mm = img.get_f64("FOCALLEN")?;
                 (focal_mm > 0.0).then(|| ARCSEC_PER_MILLIRADIAN * pixel_um / focal_mm)
             })
@@ -65,9 +65,22 @@ impl Hint {
     }
 }
 
+fn pixel_size_um(img: &Image) -> Option<f64> {
+    img.get_f64("XPIXSZ").or(img.get_f64("PIXSIZE1"))
+}
+
+/// From the header, else from the solved pixel scale and the header's pixel size.
+pub fn focal_length_mm(img: &Image, wcs: &Wcs) -> Option<f64> {
+    let derived = || Some(ARCSEC_PER_MILLIRADIAN * pixel_size_um(img)? / wcs.arcsec_per_px());
+    let positive = |v: &f64| v.is_finite() && *v > 0.0;
+    (img.get_f64("FOCALLEN").filter(positive)).or_else(|| derived().filter(positive))
+}
+
 #[derive(Clone, Debug)]
 pub struct Solution {
     pub wcs: Wcs,
+    /// Of the solved image, in pixels.
+    pub size: [usize; 2],
     pub matched_stars: usize,
     pub rms_arcsec: f64,
     pub hint_offset_deg: f64,
@@ -151,6 +164,7 @@ pub fn solve(
                     m,
                 )?;
                 let (ra, dec) = solution.wcs.pixel_to_sky(cx, cy);
+                solution.size = [width, height];
                 solution.hint_offset_deg = wcs::separation(ra0, dec0, ra, dec);
                 solution.tiles_tried = tiles_tried;
                 solution.ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -308,6 +322,7 @@ fn refine(
             crpix: [cx + px, cy + py],
             cd: transform.linear,
         },
+        size: [0, 0],
         matched_stars,
         rms_arcsec,
         hint_offset_deg: 0.0,
