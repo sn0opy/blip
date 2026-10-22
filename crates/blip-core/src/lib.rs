@@ -14,6 +14,7 @@ pub mod process;
 #[cfg(feature = "solve")]
 pub mod solve;
 pub mod stars;
+mod stats;
 pub mod tilt;
 #[cfg(feature = "solve")]
 pub mod wcs;

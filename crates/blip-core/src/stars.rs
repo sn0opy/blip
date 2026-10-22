@@ -5,7 +5,8 @@
 //! reported in sensor pixels.
 
 use crate::image::Image;
-use crate::process::{ClipStats, MAD_TO_SIGMA};
+use crate::process::ClipStats;
+use crate::stats::{MAD_TO_SIGMA, hist_median, rgb_histograms, select_nth};
 use rayon::prelude::*;
 
 #[derive(Clone, Copy, Debug)]
@@ -240,35 +241,15 @@ impl<'a> Luminance<'a> {
             let w = img.width;
             let rows: Vec<usize> = (0..img.height).step_by(STEP).collect();
             // Few tasks: the sample is small next to the histograms.
-            let per_task = rows.len().div_ceil(4).max(1);
-            let hist = rows
-                .par_chunks(per_task)
-                .map(|ys| {
-                    let mut hist = vec![0u32; 3 << 16];
-                    for &y in ys {
-                        for x in (0..w).step_by(STEP) {
-                            hist[(bayer.channel(x, y) << 16) | img.data[y * w + x] as usize] += 1;
-                        }
+            let hist = rgb_histograms(&rows, 4, |ys, hist| {
+                for &y in ys {
+                    for x in (0..w).step_by(STEP) {
+                        hist[(bayer.channel(x, y) << 16) | img.data[y * w + x] as usize] += 1;
                     }
-                    hist
-                })
-                .reduce_with(|mut a, b| {
-                    a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
-                    a
-                })
-                .unwrap_or_default();
-            let mut medians = [1.0f32; 3];
-            for (m, h) in medians.iter_mut().zip(hist.as_chunks::<65536>().0) {
-                let n = h.iter().map(|&c| c as u64).sum::<u64>();
-                // The element at sorted index n / 2, like `select_nth_unstable(n / 2)`.
-                let mut cum = 0u64;
-                if let Some(v) = h.iter().position(|&c| {
-                    cum += c as u64;
-                    cum > n / 2
-                }) {
-                    *m = v as f32;
                 }
-            }
+            });
+            let medians: [f32; 3] =
+                std::array::from_fn(|c| hist_median(&hist[c << 16..(c + 1) << 16]) as f32);
             let max = medians.iter().copied().fold(1.0, f32::max);
             gains = medians.map(|m| if m > 0.0 { max / m } else { 1.0 });
         }
@@ -486,85 +467,11 @@ fn robust_stats(data: &[f32]) -> (f32, f32) {
     (med, mad * MAD_TO_SIGMA as f32)
 }
 
-/// The `k`-th smallest (by `total_cmp`) of `f(v)` over every `step`-th value of
-/// `vals`, without sorting or copying: an exact radix select on an order-preserving
-/// u32 key. Each pass histograms the next digit of the keys that share the digits
-/// found so far, and picks the digit whose bucket holds rank `k`. Small digits keep
-/// the per-task histograms in L1.
-fn select_nth(vals: &[f32], step: usize, mut k: usize, f: impl Fn(f32) -> f32 + Sync) -> f32 {
-    // Integer order of the key equals `f32::total_cmp`.
-    let key = |v: f32| {
-        let b = f(v).to_bits();
-        b ^ ((((b as i32) >> 31) as u32) | 0x8000_0000)
-    };
-    // A multiple of `step`, so striding within chunks keeps the global phase.
-    let chunk = vals
-        .len()
-        .div_ceil(rayon::current_num_threads())
-        .max(1 << 16)
-        .next_multiple_of(step);
-    let mut prefix = 0u32;
-    for (shift, bits) in [(20, 12), (8, 12), (0, 8)] {
-        let top = shift + bits;
-        let mask = (1u32 << bits) - 1;
-        let hist = vals
-            .par_chunks(chunk)
-            .map(|c| {
-                let mut hist = vec![0u32; 1 << bits];
-                for &v in c.iter().step_by(step) {
-                    let key = key(v);
-                    if (key as u64 >> top) as u32 == prefix {
-                        hist[((key >> shift) & mask) as usize] += 1;
-                    }
-                }
-                hist
-            })
-            .reduce_with(|mut a, b| {
-                a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
-                a
-            })
-            .unwrap_or_default();
-        let mut digit = 0;
-        for (i, &c) in hist.iter().enumerate() {
-            if c as usize > k {
-                digit = i as u32;
-                break;
-            }
-            k -= c as usize;
-        }
-        prefix = (prefix << bits) | digit;
-    }
-    f32::from_bits(if prefix >> 31 == 1 {
-        prefix ^ 0x8000_0000
-    } else {
-        !prefix
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::process::clip_stats;
     use crate::process::testutil::{image, noise};
-
-    #[test]
-    fn select_nth_matches_sorting() {
-        let vals: Vec<f32> = (0..10_001)
-            .map(|i| (noise(i, 20_000) as f32 - 5_000.0) / 7.0)
-            .collect();
-        for step in [1, 5] {
-            let mut s: Vec<f32> = vals.iter().step_by(step).copied().collect();
-            s.sort_by(f32::total_cmp);
-            for k in [0, 1, s.len() / 3, s.len() / 2, s.len() - 1] {
-                assert_eq!(select_nth(&vals, step, k, |v| v), s[k]);
-            }
-            let med = s[s.len() / 2];
-            let mut dev: Vec<f32> = s.iter().map(|v| (v - med).abs()).collect();
-            dev.sort_by(f32::total_cmp);
-            let k = dev.len() / 2;
-            assert_eq!(select_nth(&vals, step, k, |v| (v - med).abs()), dev[k]);
-        }
-    }
 
     #[test]
     fn smoothing_matches_direct_computation() {

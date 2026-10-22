@@ -5,11 +5,8 @@
 //! cells. Full resolution uses bilinear interpolation.
 
 use crate::image::{Bayer, Image};
+use crate::stats::{MAD_TO_SIGMA, hist_median_mad, median_mad, rgb_histograms};
 use rayon::prelude::*;
-
-/// Converts a median absolute deviation into the standard deviation of a normal
-/// distribution.
-pub const MAD_TO_SIGMA: f64 = 1.4826;
 
 /// Full-resolution stretch statistics are taken from about this many pixels per channel.
 const FULL_STATS_SAMPLES: usize = 4_000_000;
@@ -232,28 +229,18 @@ fn debayer_stretch<P: Pixel>(
     // pixels are less noisy than raw ones, so the MAD is taken after debayering too.
     let step = (w * h / FULL_STATS_SAMPLES).max(1);
     let rows: Vec<usize> = (0..h).filter(|y| (y / 2) % step == 0).collect();
-    let per_task = rows.len().div_ceil(rayon::current_num_threads()).max(1);
-    let hist = rows
-        .par_chunks(per_task)
-        .map(|ys| {
-            let mut hist = vec![0u32; 3 << 16];
-            let mut buf = vec![0u16; 3 * w];
-            for &y in ys {
-                debayer_row(img, bayer, y, split3(&mut buf, w));
-                for (c, plane) in buf.chunks_exact(w).enumerate() {
-                    let hist = &mut hist[c << 16..(c + 1) << 16];
-                    for &v in plane {
-                        hist[v as usize] += 1;
-                    }
+    let hist = rgb_histograms(&rows, rayon::current_num_threads(), |ys, hist| {
+        let mut buf = vec![0u16; 3 * w];
+        for &y in ys {
+            debayer_row(img, bayer, y, split3(&mut buf, w));
+            for (c, plane) in buf.chunks_exact(w).enumerate() {
+                let hist = &mut hist[c << 16..(c + 1) << 16];
+                for &v in plane {
+                    hist[v as usize] += 1;
                 }
             }
-            hist
-        })
-        .reduce_with(|mut a, b| {
-            a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
-            a
-        })
-        .unwrap_or_default();
+        }
+    });
     let stats: Vec<(f64, f64)> = hist
         .as_chunks::<65536>()
         .0
@@ -695,81 +682,6 @@ pub fn clip_points(
     points
 }
 
-/// Exact median and MAD (both normalized to 0..1) via a 16-bit histogram.
-pub fn median_mad(data: &[u16]) -> (f64, f64) {
-    hist_median_mad(&histogram(data))
-}
-
-fn histogram(data: &[u16]) -> Vec<u32> {
-    // Most samples of a sky image share a few background values. With a single
-    // histogram each increment of the same counter waits for the previous one; four
-    // interleaved ones keep the increments independent.
-    data.par_chunks(1 << 20)
-        .map(|chunk| {
-            let mut h = vec![0u32; 4 << 16];
-            let (quads, rest) = chunk.as_chunks::<4>();
-            for q in quads {
-                for (i, &v) in q.iter().enumerate() {
-                    h[(i << 16) | v as usize] += 1;
-                }
-            }
-            for &v in rest {
-                h[v as usize] += 1;
-            }
-            let (first, others) = h.split_at_mut(1 << 16);
-            for other in others.as_chunks::<65536>().0 {
-                first.iter_mut().zip(other).for_each(|(a, b)| *a += b);
-            }
-            h.truncate(1 << 16);
-            h
-        })
-        .reduce(
-            || vec![0u32; 65536],
-            |mut a, b| {
-                a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
-                a
-            },
-        )
-}
-
-/// Exact median and MAD (normalized to 0..1) of the values counted in a 16-bit histogram.
-fn hist_median_mad(hist: &[u32]) -> (f64, f64) {
-    let n = hist.iter().map(|&c| c as u64).sum::<u64>();
-    if n == 0 {
-        return (0.0, 0.0);
-    }
-    let half = n.div_ceil(2);
-
-    let mut cum = 0u64;
-    let mut med = 0usize;
-    for (i, &c) in hist.iter().enumerate() {
-        cum += c as u64;
-        if cum >= half {
-            med = i;
-            break;
-        }
-    }
-
-    // The histogram of |x - median| follows directly from the value histogram.
-    let mut cum = hist[med] as u64;
-    let mut mad = 0usize;
-    if cum < half {
-        for d in 1..65536usize {
-            if med + d < 65536 {
-                cum += hist[med + d] as u64;
-            }
-            if d <= med {
-                cum += hist[med - d] as u64;
-            }
-            if cum >= half {
-                mad = d;
-                break;
-            }
-        }
-    }
-    (med as f64 / 65535.0, mad as f64 / 65535.0)
-}
-
 /// u16 -> u8 lookup table: scale by `gain`, clip at `shadows`, apply the MTF.
 fn stf_lut(shadows: f64, midtones: f64, gain: f64) -> Vec<u8> {
     let range = (1.0 - shadows).max(f64::EPSILON);
@@ -843,18 +755,6 @@ mod tests {
         // Monotonic.
         let ys: Vec<f64> = (0..=100).map(|i| mtf(0.05, i as f64 / 100.0)).collect();
         assert!(ys.windows(2).all(|w| w[0] <= w[1]));
-    }
-
-    #[test]
-    fn median_mad_exact() {
-        assert_eq!(median_mad(&[]), (0.0, 0.0));
-        assert_eq!(median_mad(&[7; 9]), (7.0 / 65535.0, 0.0));
-        // Median 3; deviations 2, 1, 0, 1, 97 -> MAD 1.
-        assert_eq!(
-            median_mad(&[1, 2, 3, 4, 100]),
-            (3.0 / 65535.0, 1.0 / 65535.0)
-        );
-        assert_eq!(median_mad(&[0, 65535, 65535]), (1.0, 0.0));
     }
 
     #[test]
