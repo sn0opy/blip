@@ -14,9 +14,8 @@ use rayon::prelude::*;
 pub(crate) const SIGNATURE: &[u8] = b"XISF0100";
 /// Signature, header length and a reserved field precede the XML header.
 const PREFIX: usize = 16;
-/// Largest data block accepted. A compressed block can claim any size, and an allocation
-/// that can't succeed aborts (in wasm, where the address space is 4 GiB, it kills the
-/// worker).
+/// Largest data block accepted. An allocation that can't succeed aborts (in wasm, where
+/// the address space is 4 GiB, it kills the worker).
 const MAX_RAW_LEN: usize = if cfg!(target_pointer_width = "64") {
     1 << 35
 } else {
@@ -84,6 +83,16 @@ enum Codec {
     Zstd,
 }
 
+impl Codec {
+    fn max_ratio(self) -> usize {
+        match self {
+            Codec::Zlib => 1032,
+            Codec::Lz4 => 255,
+            Codec::Zstd => 32768,
+        }
+    }
+}
+
 struct Compression {
     codec: Codec,
     /// Byte shuffling item size.
@@ -139,6 +148,11 @@ impl Compression {
         };
         if total(|b| b.0) != Some(len) || total(|b| b.1) != Some(raw_len) {
             return Err("XISF subblock sizes don't add up".into());
+        }
+        if let Some(&(c, u)) = (subblocks.iter()).find(|(c, u)| *u / codec.max_ratio() > *c) {
+            return Err(format!(
+                "corrupt compressed XISF data: {c} bytes can't hold {u} bytes"
+            ));
         }
         Ok(Self {
             codec,
@@ -854,6 +868,27 @@ mod tests {
         assert!(bad(r#"compression="zlib:1" subblocks="2,1:2,1""#).contains("add up"));
         assert!(bad(r#"compression="zlib:1" subblocks="4""#).contains("invalid"));
         assert!(bad(r#"compression="zlib:2""#).contains("needs 1"));
+
+        let zeros = vec![0u8; 1 << 22];
+        let attrs = |codec: &str| {
+            format!(
+                r#"geometry="2048:2048:1" sampleFormat="UInt8" compression="{codec}:{}""#,
+                1 << 22
+            )
+        };
+        for codec in ["zlib", "lz4", "zstd"] {
+            let block = compress(codec, &zeros);
+            assert_eq!(
+                data(&one(&attrs(codec), "", &block)).len(),
+                1 << 22,
+                "{codec}"
+            );
+            let bomb = &block[..block.len() / 4];
+            assert!(
+                parse_err(&one(&attrs(codec), "", bomb)).contains("can't hold"),
+                "{codec}"
+            );
+        }
     }
 
     #[test]
