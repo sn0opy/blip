@@ -603,16 +603,13 @@ fn info_text(
             let (ra, dec) = w.pixel_to_sky(sw as f64 / 2.0, sh as f64 / 2.0);
             let fov = |px: usize| px as f64 * w.arcsec_per_px() / 3600.0;
             lines.push(format!(
-                "solved: {} {} · {:.2}″/px · {:.2}°×{:.2}° · north {:.0}° CW{} · {} stars · rms {:.2}″",
+                "solved: {} {} · {:.2}°×{:.2}° · north {:.0}° CW{}",
                 draw::format_ra(ra, 0.0),
                 draw::format_dec(dec, 0.0),
-                w.arcsec_per_px(),
                 fov(sw),
                 fov(sh),
                 w.north_clockwise_from_up(),
                 if w.mirrored() { " · mirrored" } else { "" },
-                sol.matched_stars,
-                sol.rms_arcsec
             ));
         }
         Some(Err(e)) => lines.push(format!("plate solve failed: {e}")),
