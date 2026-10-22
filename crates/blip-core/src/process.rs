@@ -345,25 +345,16 @@ pub fn bin_image(img: &Image, max_side: usize) -> (Vec<Vec<u16>>, usize, usize, 
         let f = long.div_ceil(max_side).min(sw.min(sh)).max(1);
         let (w, h) = (sw / f, sh / f);
         let plane_len = sw * sh;
-        let div = (f * f) as u64;
         let planes = (0..img.planes)
             .map(|p| {
                 let src = &src[p * plane_len..(p + 1) * plane_len];
-                if f == 1 {
-                    return src.to_vec();
+                match f {
+                    1 => src.to_vec(),
+                    2 => bin_plane_by::<2>(src, sw, w, h),
+                    3 => bin_plane_by::<3>(src, sw, w, h),
+                    4 => bin_plane_by::<4>(src, sw, w, h),
+                    _ => bin_plane(src, sw, f, w, h),
                 }
-                let mut dst = vec![0u16; w * h];
-                dst.par_chunks_mut(w).enumerate().for_each(|(oy, row)| {
-                    for (ox, d) in row.iter_mut().enumerate() {
-                        let mut sum = 0u64;
-                        for sy in oy * f..oy * f + f {
-                            let start = sy * sw + ox * f;
-                            sum += src[start..start + f].iter().map(|&v| v as u64).sum::<u64>();
-                        }
-                        *d = (sum / div) as u16;
-                    }
-                });
-                dst
             })
             .collect();
         return (planes, w, h, f);
@@ -431,6 +422,55 @@ pub fn bin_image(img: &Image, max_side: usize) -> (Vec<Vec<u16>>, usize, usize, 
             }
         });
     (planes, w, h, f)
+}
+
+/// Average `F`x`F` blocks of an `sw` wide plane into a `w`x`h` one. A fixed factor lets
+/// the block sums vectorize and turns the division into a multiplication; u32 sums
+/// can't overflow for factors up to 256.
+fn bin_plane_by<const F: usize>(src: &[u16], sw: usize, w: usize, h: usize) -> Vec<u16> {
+    const { assert!(F <= 256) };
+    let div = (F * F) as u32;
+    let mut dst = vec![0u16; w * h];
+    // Whole source rows are added up into a row of block sums, so the source is read
+    // sequentially.
+    dst.par_chunks_mut(w).enumerate().for_each_init(
+        || vec![0u32; w],
+        |sums, (oy, row)| {
+            sums.fill(0);
+            for sy in oy * F..oy * F + F {
+                let line = &src[sy * sw..][..w * F];
+                for (s, block) in sums.iter_mut().zip(line.as_chunks::<F>().0) {
+                    *s += block.iter().map(|&v| v as u32).sum::<u32>();
+                }
+            }
+            for (d, &s) in row.iter_mut().zip(sums.iter()) {
+                *d = (s / div) as u16;
+            }
+        },
+    );
+    dst
+}
+
+/// [`bin_plane_by`] for any factor.
+fn bin_plane(src: &[u16], sw: usize, f: usize, w: usize, h: usize) -> Vec<u16> {
+    let div = (f * f) as u64;
+    let mut dst = vec![0u16; w * h];
+    dst.par_chunks_mut(w).enumerate().for_each_init(
+        || vec![0u64; w],
+        |sums, (oy, row)| {
+            sums.fill(0);
+            for sy in oy * f..oy * f + f {
+                let line = &src[sy * sw..][..w * f];
+                for (s, block) in sums.iter_mut().zip(line.chunks_exact(f)) {
+                    *s += block.iter().map(|&v| v as u64).sum::<u64>();
+                }
+            }
+            for (d, &s) in row.iter_mut().zip(sums.iter()) {
+                *d = (s / div) as u16;
+            }
+        },
+    );
+    dst
 }
 
 /// Bilinear demosaic of a whole (small) image into three planes.
@@ -602,36 +642,57 @@ pub fn clip_points(
     let sw = img.width;
     let plane_len = img.width * img.height;
     let level = stats.bright_level;
-    let rows: Vec<Vec<(u32, u32, u8)>> = (0..h)
-        .into_par_iter()
-        .map(|oy| {
-            let mut kinds = vec![0u8; w];
-            for p in 0..img.planes {
-                let plane = &img.data[p * plane_len..(p + 1) * plane_len];
-                for sy in oy * bin..oy * bin + bin {
-                    let line = &plane[sy * sw..sy * sw + w * bin];
-                    for (sx, &v) in line.iter().enumerate() {
-                        let k = if v >= level {
-                            CLIP_BRIGHT
-                        } else if v == 0 {
-                            CLIP_DARK
-                        } else {
-                            continue;
-                        };
-                        let o = &mut kinds[sx / bin];
-                        *o = (*o).max(k);
-                    }
+    let clipped = |v: u16| (v == 0) | (v >= level);
+    let row = |oy: usize| -> Vec<(u32, u32, u8)> {
+        let mut kinds: Option<Vec<u8>> = None;
+        for p in 0..img.planes {
+            let plane = &img.data[p * plane_len..(p + 1) * plane_len];
+            for sy in oy * bin..oy * bin + bin {
+                let line = &plane[sy * sw..sy * sw + w * bin];
+                // Most lines have no clipped pixel; a branch-free pass finds those quickly.
+                if !line.iter().fold(false, |any, &v| any | clipped(v)) {
+                    continue;
+                }
+                let kinds = kinds.get_or_insert_with(|| vec![0u8; w]);
+                for (sx, &v) in line.iter().enumerate() {
+                    let k = if v >= level {
+                        CLIP_BRIGHT
+                    } else if v == 0 {
+                        CLIP_DARK
+                    } else {
+                        continue;
+                    };
+                    let o = &mut kinds[sx / bin];
+                    *o = (*o).max(k);
                 }
             }
-            kinds
-                .iter()
-                .enumerate()
-                .filter(|(_, k)| **k != 0)
-                .map(|(x, &k)| (x as u32, oy as u32, k))
-                .collect()
-        })
-        .collect();
-    rows.into_iter().flatten().take(limit).collect()
+        }
+        let Some(kinds) = kinds else {
+            return Vec::new();
+        };
+        kinds
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| **k != 0)
+            .map(|(x, &k)| (x as u32, oy as u32, k))
+            .collect()
+    };
+    // Rows go in batches, in order, so collecting stops soon after `limit` points
+    // instead of gathering every clipped pixel first.
+    let batch = 32 * rayon::current_num_threads();
+    let mut points = Vec::new();
+    for start in (0..h).step_by(batch) {
+        let rows: Vec<_> = (start..(start + batch).min(h))
+            .into_par_iter()
+            .map(row)
+            .collect();
+        points.extend(rows.into_iter().flatten());
+        if points.len() >= limit {
+            break;
+        }
+    }
+    points.truncate(limit);
+    points
 }
 
 /// Exact median and MAD (both normalized to 0..1) via a 16-bit histogram.
@@ -640,12 +701,26 @@ pub fn median_mad(data: &[u16]) -> (f64, f64) {
 }
 
 fn histogram(data: &[u16]) -> Vec<u32> {
+    // Most samples of a sky image share a few background values. With a single
+    // histogram each increment of the same counter waits for the previous one; four
+    // interleaved ones keep the increments independent.
     data.par_chunks(1 << 20)
         .map(|chunk| {
-            let mut h = vec![0u32; 65536];
-            for &v in chunk {
+            let mut h = vec![0u32; 4 << 16];
+            let (quads, rest) = chunk.as_chunks::<4>();
+            for q in quads {
+                for (i, &v) in q.iter().enumerate() {
+                    h[(i << 16) | v as usize] += 1;
+                }
+            }
+            for &v in rest {
                 h[v as usize] += 1;
             }
+            let (first, others) = h.split_at_mut(1 << 16);
+            for other in others.as_chunks::<65536>().0 {
+                first.iter_mut().zip(other).for_each(|(a, b)| *a += b);
+            }
+            h.truncate(1 << 16);
             h
         })
         .reduce(
