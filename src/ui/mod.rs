@@ -32,9 +32,11 @@ use tree::FolderTree;
 pub const APP_ID: &str = "sh.sascha.blip";
 /// Previews are binned so their long side is at most this many pixels.
 const MAX_SIDE: usize = 3200;
-/// Number of rendered images kept on the GPU (binned / full resolution).
+/// Number of rendered images kept on the GPU (binned / full resolution without a memory
+/// budget).
 const CACHE_SIZE: usize = 10;
 const CACHE_SIZE_FULL: usize = 4;
+const MIN_CACHE: usize = 2;
 const EXTENSIONS: [&str; 4] = ["fit", "fits", "fts", "xisf"];
 const STATUS_FADE: f32 = 0.8;
 
@@ -120,6 +122,12 @@ pub struct App {
     /// The shown image while a settings change re-renders it (avoids a black flash).
     stale: Option<(PathBuf, CacheEntry)>,
     tick: u64,
+    gpu_memory: Option<gpu::MemoryQuery>,
+    memory_budget: Option<gpu::MemoryBudget>,
+    /// Largest image since the last settings change.
+    image_bytes: usize,
+    /// Set once an upload ran out of GPU memory.
+    memory_cap: Option<usize>,
 
     params: StretchParams,
     /// Steps by which the stretch's target background is raised (`StretchParams::boosted`).
@@ -242,6 +250,7 @@ impl App {
         );
         let prefs = Preferences::load(cc.storage);
         let (export_tx, export_rx) = channel();
+        let gpu_memory = cc.wgpu_render_state.as_ref().map(gpu::MemoryQuery::new);
         let mut app = Self {
             loader,
             dir: None,
@@ -258,6 +267,10 @@ impl App {
             shown: None,
             stale: None,
             tick: 0,
+            memory_budget: gpu_memory.as_ref().and_then(gpu::MemoryQuery::budget),
+            gpu_memory,
+            image_bytes: 0,
+            memory_cap: None,
             params: StretchParams {
                 neutralize: prefs.neutralize,
                 ..StretchParams::default()
@@ -319,6 +332,8 @@ impl App {
         self.errors.clear();
         self.stars.clear();
         self.shown = None;
+        self.image_bytes = 0;
+        self.memory_cap = None;
         self.refresh();
         if let Some(f) = file
             && let Some(i) = self.files.iter().position(|p| *p == f)
@@ -388,6 +403,7 @@ impl App {
     /// Queue the current image first, then prefetch neighbors, and measure stars of
     /// the same files where still missing.
     fn request_loads(&mut self) {
+        self.memory_budget = self.gpu_memory.as_ref().and_then(gpu::MemoryQuery::budget);
         let window: Vec<&PathBuf> = (self.prefetch_window().into_iter())
             .map(|(_, p)| p)
             .filter(|p| !self.errors.contains_key(*p))
@@ -447,11 +463,14 @@ impl App {
             .or(self.stale.take());
         self.cache.clear();
         self.errors.clear();
+        self.image_bytes = 0;
+        self.memory_cap = None;
         self.request_loads();
     }
 
     /// Collect finished background work: previews, star measurements, exports.
     fn poll_background(&mut self) {
+        let limit = self.cache_limit();
         let mut loaded_any = false;
         while let Some(msg) = self.loader.try_recv() {
             match msg {
@@ -465,12 +484,18 @@ impl App {
                             self.tick += 1;
                             let last_used = self.tick;
                             let loaded = *loaded;
+                            self.image_bytes = self.image_bytes.max(loaded.gpu_bytes());
                             self.cache.insert(path, CacheEntry { loaded, last_used });
                         }
                         Err(e) => {
                             self.errors.insert(path, e);
                         }
                     }
+                }
+                Message::OutOfMemory(path, settings)
+                    if settings == self.settings(&path) && self.files.contains(&path) =>
+                {
+                    self.out_of_memory(path);
                 }
                 Message::Stars(path, measured) if self.files.contains(&path) => {
                     self.stars.insert(path, *measured);
@@ -479,7 +504,11 @@ impl App {
             }
         }
         if loaded_any {
+            self.memory_budget = self.gpu_memory.as_ref().and_then(gpu::MemoryQuery::budget);
             self.evict();
+            if self.cache_limit() != limit {
+                self.request_loads();
+            }
         }
 
         while let Ok(msg) = self.export_rx.try_recv() {
@@ -540,27 +569,62 @@ impl App {
         }
     }
 
-    /// Number of rendered images kept on the GPU.
+    /// Half the GPU memory budget; the rest is left to other processes and decoding.
     fn cache_limit(&self) -> usize {
-        if self.loads_full_res() {
-            CACHE_SIZE_FULL
-        } else {
-            CACHE_SIZE.max(1 + self.prefs.ahead + self.prefs.behind)
-        }
+        let wanted = CACHE_SIZE.max(1 + self.prefs.ahead + self.prefs.behind);
+        let fits = match self.memory_budget {
+            Some(m) if self.image_bytes > 0 => {
+                let n = m.budget / 2 / self.image_bytes as u64;
+                usize::try_from(n).unwrap_or(usize::MAX).max(MIN_CACHE)
+            }
+            _ if self.loads_full_res() => CACHE_SIZE_FULL,
+            _ => wanted,
+        };
+        wanted.min(fits).min(self.memory_cap.unwrap_or(usize::MAX))
     }
 
     fn evict(&mut self) {
         while self.cache.len() > self.cache_limit() {
-            let current = self.current();
-            let victim = self
-                .cache
-                .iter()
-                .filter(|(p, _)| Some(*p) != current && Some(*p) != self.shown.as_ref())
-                .min_by_key(|(_, e)| e.last_used)
-                .map(|(p, _)| p.clone());
-            let Some(victim) = victim else { break };
+            let Some(victim) = self.eviction_victim(false) else {
+                break;
+            };
             self.cache.remove(&victim);
         }
+    }
+
+    fn eviction_victim(&self, drop_shown: bool) -> Option<PathBuf> {
+        let current = self.current();
+        let shown = self.shown.as_ref().filter(|_| !drop_shown);
+        (self.cache.iter())
+            .filter(|(p, _)| Some(*p) != current && Some(*p) != shown)
+            .min_by_key(|(_, e)| e.last_used)
+            .map(|(p, _)| p.clone())
+    }
+
+    fn out_of_memory(&mut self, path: PathBuf) {
+        self.stale = None;
+        let is_current = self.current() == Some(&path);
+        let fits = match self.eviction_victim(is_current) {
+            Some(victim) => {
+                let fits = self.cache.len();
+                self.cache.remove(&victim);
+                fits
+            }
+            None if is_current => {
+                self.errors.insert(path, "not enough GPU memory".into());
+                self.request_loads();
+                return;
+            }
+            // Only the current image fits.
+            None => 1,
+        };
+        self.memory_cap = Some(fits);
+        let s = if fits == 1 { "" } else { "s" };
+        self.set_status(
+            format!("GPU memory full: keeping {fits} image{s}"),
+            Some(4.0),
+        );
+        self.request_loads();
     }
 
     fn delete(&mut self, path: &Path) {

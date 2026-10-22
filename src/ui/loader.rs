@@ -91,6 +91,7 @@ pub struct ClipOverlay {
 
 pub enum Message {
     Image(PathBuf, Settings, Result<Box<Loaded>, String>),
+    OutOfMemory(PathBuf, Settings),
     /// Star sizes, the tilt they show and the plate solve.
     Stars(PathBuf, Box<MeasuredStars>),
 }
@@ -360,26 +361,30 @@ impl Worker {
         let result = catch_unwind(AssertUnwindSafe(|| {
             load(&self.shared.gpu, &job.path, job.settings, &wanted)
         }))
-        .unwrap_or_else(|panic| Some(Err(format!("internal error: {}", panic_message(&*panic)))));
+        .unwrap_or_else(|panic| {
+            let e = format!("internal error: {}", panic_message(&*panic));
+            Some(Err(LoadError::File(e)))
+        });
 
         let mut q = self.shared.lock();
         q.working[self.id] = None;
-        let result = result.map(|result| match result {
+        let message = result.map(|result| match result {
             Ok((loaded, raw)) => {
                 q.keep_raw(raw);
-                Ok(Box::new(loaded))
+                Message::Image(job.path, job.settings, Ok(Box::new(loaded)))
             }
-            Err(e) => {
+            Err(LoadError::File(e)) => {
                 // Nothing to measure in a file that can't be read.
                 q.wanted_stars.retain(|p| *p != job.path);
                 q.stars.retain(|p| *p != job.path);
-                Err(e)
+                Message::Image(job.path, job.settings, Err(e))
             }
+            Err(LoadError::OutOfMemory) => Message::OutOfMemory(job.path, job.settings),
         });
         drop(q);
         // Its star job may have been waiting for it.
         self.shared.wake.notify_all();
-        Some(Message::Image(job.path, job.settings, result?))
+        message
     }
 
     /// Measure star sizes and plate solve; `None` if they stopped being wanted.
@@ -431,18 +436,23 @@ impl Worker {
     }
 }
 
+enum LoadError {
+    File(String),
+    OutOfMemory,
+}
+
 /// Read, render and upload. `None` once `wanted` says the result isn't needed.
 fn load(
     gpu: &OnceLock<Gpu>,
     path: &Path,
     settings: Settings,
     wanted: &dyn Fn() -> bool,
-) -> Option<Result<(Loaded, Raw), String>> {
+) -> Option<Result<(Loaded, Raw), LoadError>> {
     let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
     let t = Instant::now();
     let (img, read) = match image::read_file_timed(path) {
         Ok(r) => r,
-        Err(e) => return Some(Err(e)),
+        Err(e) => return Some(Err(LoadError::File(e))),
     };
     let read_ms = read.io.as_secs_f64() * 1000.0;
     let decode_ms = ms(t) - read_ms;
@@ -481,9 +491,14 @@ fn load(
     let name = path.to_string_lossy();
     let clip_overlay = overlay.map(|(o, uv)| {
         let texture = uploader.upload(&format!("{name} clipped"), o.levels, Filter::Nearest);
-        ClipOverlay { texture, uv }
+        texture.map(|texture| ClipOverlay { texture, uv })
     });
-    let texture = uploader.upload(&name, levels, Filter::Smooth);
+    let Ok(clip_overlay) = clip_overlay.transpose() else {
+        return Some(Err(LoadError::OutOfMemory));
+    };
+    let Ok(texture) = uploader.upload(&name, levels, Filter::Smooth) else {
+        return Some(Err(LoadError::OutOfMemory));
+    };
     let texture_ms = mips_ms + ms(t);
 
     let loaded = Loaded {

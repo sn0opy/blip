@@ -1,3 +1,4 @@
+use super::gpu::MemoryBudget;
 use super::loader::Work;
 use super::tree::Row;
 use super::{App, CacheEntry, MeasuredStars, STATUS_FADE, draw, file_name};
@@ -332,7 +333,10 @@ impl App {
                 gpu_bytes / (1 << 20),
                 self.stars.len(),
             ),
-            format!("GPU {}", self.gpu_info),
+            match self.memory_budget {
+                Some(m) => format!("GPU {} · memory: {}", self.gpu_info, memory(m)),
+                None => format!("GPU {}", self.gpu_info),
+            },
             format!("prefetch {prefetch}"),
             format!(
                 "queue: {} images · {} star measurements waiting",
@@ -457,6 +461,15 @@ fn gear_button(ui: &mut egui::Ui) -> egui::Response {
     }
     painter.circle_stroke(center, r * 0.55, egui::Stroke::new(r * 0.4, color));
     response
+}
+
+fn memory(m: MemoryBudget) -> String {
+    const GB: f64 = (1u64 << 30) as f64;
+    if m.budget >= 1 << 30 {
+        format!("{:.1}/{:.1} GB", m.used as f64 / GB, m.budget as f64 / GB)
+    } else {
+        format!("{}/{} MB", m.used >> 20, m.budget >> 20)
+    }
 }
 
 /// Debug lines for the shown image: geometry, timings, stretch, saturation level.

@@ -35,6 +35,14 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# GPU memory budget on D3D12 (src/ui/gpu.rs). Same version wgpu uses.
+windows = { version = "0.62.2", default-features = false, features = [
+    "Win32_Graphics_Dxgi",
+] }
+
+# GPU memory budget on Vulkan (src/ui/gpu.rs). Same version wgpu uses.
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+ash = "0.38.0"
 
 # Finder hands documents over through the app delegate (src/macos.rs). Same versions winit uses.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -53,6 +61,11 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSOperation",
     "NSString",
     "NSURL",
+] }
+# GPU memory budget on Metal (src/ui/gpu.rs). Same version wgpu uses.
+objc2-metal = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "MTLDevice",
 ] }
 
 [workspace]

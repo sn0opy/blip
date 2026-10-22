@@ -13,7 +13,9 @@ use eframe::egui::{self, ColorImage, TextureHandle, TextureId, TextureOptions, m
 use eframe::egui_wgpu::{RenderState, Renderer};
 use eframe::wgpu;
 use rayon::prelude::*;
+use std::pin::pin;
 use std::sync::{Arc, OnceLock};
+use std::task::{Context, Poll, Waker};
 
 /// One mip level, RGBA in egui's gamma-encoded (sRGB) space.
 pub struct Level {
@@ -66,7 +68,12 @@ impl Uploader {
     }
 
     /// `levels` is the base level followed by its mip chain (egui's textures use the base only).
-    pub fn upload(&self, name: &str, levels: Vec<Level>, filter: Filter) -> Texture {
+    pub fn upload(
+        &self,
+        name: &str,
+        levels: Vec<Level>,
+        filter: Filter,
+    ) -> Result<Texture, OutOfMemory> {
         let size = |l: &Level| l.width * l.height * 4;
         let (bytes, owner) = match self {
             Self::Wgpu {
@@ -75,7 +82,7 @@ impl Uploader {
                 renderer,
             } => (
                 levels.iter().map(size).sum(),
-                Owner::Wgpu(upload_wgpu(device, queue, renderer, name, &levels, filter)),
+                Owner::Wgpu(upload_wgpu(device, queue, renderer, name, &levels, filter)?),
             ),
             Self::Egui(ctx) => {
                 let base = levels.into_iter().next().expect("no texture data");
@@ -89,8 +96,20 @@ impl Uploader {
                 (bytes, Owner::Egui(ctx.load_texture(name, image, options)))
             }
         };
-        Texture { bytes, owner }
+        Ok(Texture { bytes, owner })
     }
+}
+
+#[derive(Debug)]
+pub struct OutOfMemory;
+
+fn out_of_memory(scope: wgpu::ErrorScopeGuard) -> bool {
+    // Native backends report scope results right away.
+    let mut cx = Context::from_waker(Waker::noop());
+    matches!(
+        pin!(scope.pop()).poll(&mut cx),
+        Poll::Ready(Some(wgpu::Error::OutOfMemory { .. }))
+    )
 }
 
 fn upload_wgpu(
@@ -100,12 +119,14 @@ fn upload_wgpu(
     name: &str,
     levels: &[Level],
     filter: Filter,
-) -> WgpuTexture {
+) -> Result<WgpuTexture, OutOfMemory> {
     let extent = |l: &Level| wgpu::Extent3d {
         width: l.width as u32,
         height: l.height as u32,
         depth_or_array_layers: 1,
     };
+    // Uncaptured, wgpu panics on running out of memory.
+    let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(name),
         size: extent(&levels[0]),
@@ -118,6 +139,10 @@ fn upload_wgpu(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
+    if out_of_memory(scope) {
+        return Err(OutOfMemory);
+    }
+    let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     for (mip, level) in levels.iter().enumerate() {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -137,6 +162,9 @@ fn upload_wgpu(
     }
     // Start the copy now instead of with the next frame's submission.
     queue.submit(None);
+    if out_of_memory(scope) {
+        return Err(OutOfMemory);
+    }
 
     let (filter_mode, mipmap_filter) = match filter {
         Filter::Smooth => (wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Linear),
@@ -153,11 +181,11 @@ fn upload_wgpu(
     let id = renderer
         .write()
         .register_native_texture_with_sampler_options(device, &view, sampler);
-    WgpuTexture {
+    Ok(WgpuTexture {
         id,
         renderer: renderer.clone(),
         _texture: texture,
-    }
+    })
 }
 
 /// A texture egui can draw. Freed when dropped.

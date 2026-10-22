@@ -1,4 +1,6 @@
-use eframe::egui_wgpu::{SurfaceConfig, WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew};
+use eframe::egui_wgpu::{
+    RenderState, SurfaceConfig, WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew,
+};
 use eframe::wgpu::{self, Backend, Backends, PresentMode};
 use std::sync::Arc;
 
@@ -54,4 +56,93 @@ pub fn wgpu_options(backend: Option<&str>, present: Option<&str>) -> WgpuConfigu
         wgpu_setup: WgpuSetup::CreateNew(setup),
         ..Default::default()
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MemoryBudget {
+    pub budget: u64,
+    pub used: u64,
+}
+
+#[derive(Clone)]
+pub struct MemoryQuery {
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+}
+
+impl MemoryQuery {
+    pub fn new(render_state: &RenderState) -> Self {
+        Self {
+            adapter: render_state.adapter.clone(),
+            device: render_state.device.clone(),
+        }
+    }
+
+    pub fn budget(&self) -> Option<MemoryBudget> {
+        match self.adapter.get_info().backend {
+            #[cfg(target_vendor = "apple")]
+            Backend::Metal => metal_budget(&self.device),
+            #[cfg(windows)]
+            Backend::Dx12 => dx12_budget(&self.adapter),
+            #[cfg(any(windows, target_os = "linux"))]
+            Backend::Vulkan => vulkan_budget(&self.device),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+fn metal_budget(device: &wgpu::Device) -> Option<MemoryBudget> {
+    use objc2_metal::MTLDevice;
+    // SAFETY: only reads properties of the device.
+    let hal = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }?;
+    let raw = hal.raw_device();
+    Some(MemoryBudget {
+        budget: raw.recommendedMaxWorkingSetSize(),
+        used: raw.currentAllocatedSize() as u64,
+    })
+}
+
+#[cfg(windows)]
+fn dx12_budget(adapter: &wgpu::Adapter) -> Option<MemoryBudget> {
+    use windows::Win32::Graphics::Dxgi::DXGI_MEMORY_SEGMENT_GROUP_LOCAL;
+    // SAFETY: only queries the adapter.
+    let hal = unsafe { adapter.as_hal::<wgpu::hal::api::Dx12>() }?;
+    // On integrated GPUs the local segment covers all memory the GPU may use.
+    let info = (hal.raw_adapter())
+        .query_video_memory_info(DXGI_MEMORY_SEGMENT_GROUP_LOCAL)
+        .ok()?;
+    Some(MemoryBudget {
+        budget: info.Budget,
+        used: info.CurrentUsage,
+    })
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+fn vulkan_budget(device: &wgpu::Device) -> Option<MemoryBudget> {
+    use ash::vk;
+    // SAFETY: only queries the physical device.
+    let hal = unsafe { device.as_hal::<wgpu::hal::api::Vulkan>() }?;
+    let instance = hal.shared_instance();
+    if !(hal.enabled_device_extensions()).contains(&ash::ext::memory_budget::NAME)
+        || instance.instance_api_version() < vk::API_VERSION_1_1
+    {
+        return None;
+    }
+    let mut budget = vk::PhysicalDeviceMemoryBudgetPropertiesEXT::default();
+    let mut props = vk::PhysicalDeviceMemoryProperties2::default().push_next(&mut budget);
+    // SAFETY: Vulkan 1.1 and VK_EXT_memory_budget are available (checked above).
+    unsafe {
+        (instance.raw_instance())
+            .get_physical_device_memory_properties2(hal.raw_physical_device(), &mut props);
+    }
+    let memory = props.memory_properties;
+    // Textures go to the largest device-local heap.
+    let (heap, _) = (memory.memory_heaps_as_slice().iter().enumerate())
+        .filter(|(_, h)| h.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
+        .max_by_key(|(_, h)| h.size)?;
+    Some(MemoryBudget {
+        budget: budget.heap_budget[heap],
+        used: budget.heap_usage[heap],
+    })
 }
