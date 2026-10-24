@@ -2,6 +2,7 @@
 //! AstroBin, Aladin and SIMBAD, and file actions.
 
 use super::App;
+use super::prefs::SubjectOrder;
 use blip_core::astrobin::{self, FieldOfView, Search};
 use blip_core::dso::{self, Dso};
 use eframe::egui;
@@ -60,7 +61,10 @@ impl App {
         };
         let solved = solution.is_some();
         let field = solution.map(|s| FieldOfView::of(&s.wcs, s.size));
-        let subjects = solution.map_or_else(Vec::new, |s| dso::in_field(&s.wcs, s.size));
+        let mut subjects = solution.map_or_else(Vec::new, |s| dso::in_field(&s.wcs, s.size));
+        if self.prefs.subject_order == SubjectOrder::Name {
+            subjects.sort_by_cached_key(|d| natural_key(d.label));
+        }
         let status = |text: &str| Some(MenuAction::Status(text.into()));
         let mut action = None;
 
@@ -214,6 +218,30 @@ fn subject_name(d: &Dso) -> String {
     }
 }
 
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum Chunk {
+    Number(u64),
+    Text(String),
+}
+
+/// Sorts "M 2" before "M 10", ignoring case and spaces ("NGC0704B" next to "NGC 705").
+fn natural_key(s: &str) -> Vec<Chunk> {
+    let mut chunks = Vec::new();
+    let mut rest = s;
+    while let Some(first) = rest.chars().next() {
+        let digits = first.is_ascii_digit();
+        let end = (rest.find(|c: char| c.is_ascii_digit() != digits)).unwrap_or(rest.len());
+        let (run, tail) = rest.split_at(end);
+        chunks.push(if digits {
+            Chunk::Number(run.parse().unwrap_or(u64::MAX))
+        } else {
+            Chunk::Text(run.replace(' ', "").to_lowercase())
+        });
+        rest = tail;
+    }
+    chunks
+}
+
 /// "05h35m16.8s -05°23'24\"", a form most astronomy software accepts.
 fn coordinates(ra: f64, dec: f64) -> String {
     let tenths = (ra.rem_euclid(360.0) / 15.0 * 36_000.0).round() as i64 % 864_000;
@@ -240,6 +268,30 @@ mod tests {
         assert_eq!(coordinates(83.82, -5.39), "05h35m16.8s -05°23'24\"");
         assert_eq!(coordinates(359.99999, 89.99999), "00h00m00.0s +90°00'00\"");
         assert_eq!(coordinates(10.68, 0.0), "00h42m43.2s +00°00'00\"");
+    }
+
+    #[test]
+    fn sorts_designations_naturally() {
+        let mut labels = [
+            "NGC 705",
+            "M 101",
+            "IC 434",
+            "NGC0704B",
+            "M 31 (NGC 224)",
+            "M 2",
+        ];
+        labels.sort_by_cached_key(|l| natural_key(l));
+        assert_eq!(
+            labels,
+            [
+                "IC 434",
+                "M 2",
+                "M 31 (NGC 224)",
+                "M 101",
+                "NGC0704B",
+                "NGC 705"
+            ]
+        );
     }
 
     #[test]

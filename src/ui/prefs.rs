@@ -53,6 +53,31 @@ impl BinningPref {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum SubjectOrder {
+    #[default]
+    Size,
+    Name,
+}
+
+impl SubjectOrder {
+    pub const ALL: [Self; 2] = [Self::Size, Self::Name];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Size => "Apparent size",
+            Self::Name => "Name",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Size => "size",
+            Self::Name => "name",
+        }
+    }
+}
+
 /// The starting state: keys change the session, not these.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Preferences {
@@ -62,6 +87,7 @@ pub struct Preferences {
     /// Counted in the browsing direction.
     pub ahead: usize,
     pub behind: usize,
+    pub subject_order: SubjectOrder,
     pub boost: u32,
     pub show_info: bool,
     pub show_debug: bool,
@@ -81,6 +107,7 @@ impl Default for Preferences {
             binning: BinningPref::Auto,
             ahead: 3,
             behind: 1,
+            subject_order: SubjectOrder::Size,
             boost: 0,
             show_info: true,
             show_debug: false,
@@ -107,6 +134,13 @@ impl Preferences {
             .find(|b| Some(b.key()) == binning.as_deref())
         {
             prefs.binning = b;
+        }
+        let subject_order = storage.get_string("subject_order");
+        if let Some(o) = SubjectOrder::ALL
+            .into_iter()
+            .find(|o| Some(o.key()) == subject_order.as_deref())
+        {
+            prefs.subject_order = o;
         }
         let number = |key: &str, max: usize| {
             (storage.get_string(key)?.parse::<usize>().ok()).filter(|&n| n <= max)
@@ -147,6 +181,7 @@ impl Preferences {
         storage.set_string("binning", self.binning.key().into());
         storage.set_string("ahead", self.ahead.to_string());
         storage.set_string("behind", self.behind.to_string());
+        storage.set_string("subject_order", self.subject_order.key().into());
         storage.set_string("boost", self.boost.to_string());
         for (key, flag) in self.flags() {
             storage.set_string(key, flag.to_string());
@@ -203,6 +238,7 @@ mod tests {
             binning: BinningPref::Bin3,
             ahead: MAX_PREFETCH,
             behind: 0,
+            subject_order: SubjectOrder::Name,
             boost: MAX_BOOST,
             show_info: false,
             show_debug: true,
@@ -231,6 +267,7 @@ mod tests {
             ("binning", "5"),
             ("ahead", max_prefetch.as_str()),
             ("behind", "-1"),
+            ("subject_order", "Name"),
             ("boost", max_boost.as_str()),
             ("show_info", "no"),
             ("show_debug", "1"),

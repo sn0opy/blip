@@ -1,7 +1,10 @@
-use super::prefs::{BinningPref, MAX_PREFETCH, MAX_SUBFOLDER_DEPTH};
+use super::prefs::{BinningPref, MAX_PREFETCH, MAX_SUBFOLDER_DEPTH, SubjectOrder};
 use super::{App, MAX_SIDE, file_name};
 use blip_core::process::{BOOST_STEP_PERCENT, MAX_BOOST};
 use eframe::egui::{self, Color32, Key, Modifiers};
+
+/// The heading, Close button, frame and a gap to the window's edges.
+const SETTINGS_FIXED_HEIGHT: f32 = 140.0;
 
 const SHORTCUTS: &[(&str, &str)] = &[
     ("↓ → Space J", "Next image"),
@@ -95,98 +98,130 @@ impl App {
         let mut prefs = self.prefs_draft.unwrap_or(self.prefs);
         let mut close = false;
         let mut dragging = false;
-        let modal = egui::Modal::new(egui::Id::unique("settings")).show(ctx, |ui| {
-            ui.set_width(380.0);
-            let style = ui.style().clone();
-            let key = |text: &str, key: &str| with_key(&style, text, key);
-            ui.heading("Settings");
-            ui.add_space(8.0);
+        let mut frame = egui::Frame::popup(&ctx.global_style());
+        let scrollbar_margin = egui::Margin {
+            right: std::mem::take(&mut frame.inner_margin.right),
+            ..egui::Margin::ZERO
+        };
+        let modal = egui::Modal::new(egui::Id::unique("settings"))
+            .frame(frame)
+            .show(ctx, |ui| {
+                ui.set_width(380.0 + f32::from(scrollbar_margin.right));
+                let style = ui.style().clone();
+                let key = |text: &str, key: &str| with_key(&style, text, key);
+                ui.heading("Settings");
+                ui.add_space(8.0);
 
-            ui.label(egui::RichText::new("Folder").strong());
-            let label = match prefs.subfolder_depth {
-                0 => "Only the opened folder".to_string(),
-                1 => "Subfolders 1 level deep".to_string(),
-                n => format!("Subfolders up to {n} levels deep"),
-            };
-            dragging |= ui
-                .add(slider(
-                    &mut prefs.subfolder_depth,
-                    0..=MAX_SUBFOLDER_DEPTH,
-                    label,
-                ))
-                .dragged();
-            ui.label(egui::RichText::new("How many folders deep to search for images.").weak());
-            ui.add_space(10.0);
+                let max_height = ctx.content_rect().height() - SETTINGS_FIXED_HEIGHT;
+                egui::ScrollArea::vertical()
+                    .max_height(max_height)
+                    .auto_shrink([false, true])
+                    .content_margin(scrollbar_margin)
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Folder").strong());
+                        let label = match prefs.subfolder_depth {
+                            0 => "Only the opened folder".to_string(),
+                            1 => "Subfolders 1 level deep".to_string(),
+                            n => format!("Subfolders up to {n} levels deep"),
+                        };
+                        dragging |= ui
+                            .add(slider(
+                                &mut prefs.subfolder_depth,
+                                0..=MAX_SUBFOLDER_DEPTH,
+                                label,
+                            ))
+                            .dragged();
+                        ui.label(
+                            egui::RichText::new("How many folders deep to search for images.")
+                                .weak(),
+                        );
+                        ui.add_space(10.0);
 
-            ui.label(egui::RichText::new("Preview").strong());
-            ui.horizontal(|ui| {
-                ui.label(key("Binning", "B"));
-                egui::ComboBox::from_id_salt("binning")
-                    .selected_text(prefs.binning.label())
-                    .show_ui(ui, |ui| {
-                        for b in BinningPref::ALL {
-                            ui.selectable_value(&mut prefs.binning, b, b.label());
+                        ui.label(egui::RichText::new("Preview").strong());
+                        ui.horizontal(|ui| {
+                            ui.label(key("Binning", "B"));
+                            egui::ComboBox::from_id_salt("binning")
+                                .selected_text(prefs.binning.label())
+                                .show_ui(ui, |ui| {
+                                    for b in BinningPref::ALL {
+                                        ui.selectable_value(&mut prefs.binning, b, b.label());
+                                    }
+                                });
+                        });
+                        let mode = match prefs.binning {
+                            BinningPref::Auto => format!("Bins 2x2, 3x3, … to fit {MAX_SIDE} px."),
+                            BinningPref::Bin1 => "Full resolution.".into(),
+                            // Keeps the line, so the GPU limit doesn't move.
+                            _ => " ".into(),
+                        };
+                        ui.label(egui::RichText::new(mode).weak());
+                        if let Some(limit) = self.loader.max_texture_side() {
+                            let gpu = format!(
+                                "GPU limits to {limit} px; larger images are binned to fit."
+                            );
+                            ui.label(egui::RichText::new(gpu).weak());
                         }
-                    });
-            });
-            let mode = match prefs.binning {
-                BinningPref::Auto => format!("Bins 2x2, 3x3, … to fit {MAX_SIDE} px."),
-                BinningPref::Bin1 => "Full resolution.".into(),
-                // Keeps the line, so the GPU limit doesn't move.
-                _ => " ".into(),
-            };
-            ui.label(egui::RichText::new(mode).weak());
-            if let Some(limit) = self.loader.max_texture_side() {
-                let gpu = format!("GPU limits to {limit} px; larger images are binned to fit.");
-                ui.label(egui::RichText::new(gpu).weak());
-            }
-            ui.add_space(10.0);
+                        ui.add_space(10.0);
 
-            ui.label(egui::RichText::new("Images kept in memory").strong());
-            let label = format!("{} ahead", prefs.ahead);
-            dragging |= ui
-                .add(slider(&mut prefs.ahead, 0..=MAX_PREFETCH, label))
-                .dragged();
-            let label = format!("{} behind", prefs.behind);
-            dragging |= ui
-                .add(slider(&mut prefs.behind, 0..=MAX_PREFETCH, label))
-                .dragged();
-            ui.label(
-                egui::RichText::new(
-                    "Counted in the direction you browse. Each image takes GPU memory, \
+                        ui.label(egui::RichText::new("Images kept in memory").strong());
+                        let label = format!("{} ahead", prefs.ahead);
+                        dragging |= ui
+                            .add(slider(&mut prefs.ahead, 0..=MAX_PREFETCH, label))
+                            .dragged();
+                        let label = format!("{} behind", prefs.behind);
+                        dragging |= ui
+                            .add(slider(&mut prefs.behind, 0..=MAX_PREFETCH, label))
+                            .dragged();
+                        ui.label(
+                            egui::RichText::new(
+                                "Counted in the direction you browse. Each image takes GPU memory, \
                      a few hundred MB at full resolution.",
-                )
-                .weak(),
-            );
-            ui.add_space(10.0);
+                            )
+                            .weak(),
+                        );
+                        ui.add_space(10.0);
 
-            ui.label(egui::RichText::new("On start").strong());
-            ui.checkbox(&mut prefs.show_info, key("Info overlay", "I"));
-            ui.checkbox(&mut prefs.show_debug, key("Debug info", "D"));
-            ui.checkbox(&mut prefs.actual_size, key("Zoom 1:1", "Z"));
-            ui.add_space(10.0);
+                        ui.label(egui::RichText::new("Context menu").strong());
+                        ui.horizontal(|ui| {
+                            ui.label("Sort subjects by");
+                            egui::ComboBox::from_id_salt("subject_order")
+                                .selected_text(prefs.subject_order.label())
+                                .show_ui(ui, |ui| {
+                                    for o in SubjectOrder::ALL {
+                                        ui.selectable_value(&mut prefs.subject_order, o, o.label());
+                                    }
+                                });
+                        });
+                        ui.add_space(10.0);
 
-            ui.label(egui::RichText::new("Apply to every image").strong());
-            ui.checkbox(&mut prefs.auto_stretch, key("Auto stretch", "A"));
-            let label = match prefs.boost {
-                0 => "Stretch boost off".to_string(),
-                n => format!("Stretch boost +{}%", n * BOOST_STEP_PERCENT),
-            };
-            let label = key(&label, "+/-");
-            dragging |= ui
-                .add(slider(&mut prefs.boost, 0..=MAX_BOOST, label))
-                .dragged();
-            ui.checkbox(&mut prefs.neutralize, key("Background neutralization", "N"));
-            ui.checkbox(&mut prefs.flash_clip, key("Flashing clipped pixels", "C"));
-            ui.checkbox(&mut prefs.star_view, key("Star sizes", "S"));
-            ui.checkbox(&mut prefs.tilt_view, key("Sensor tilt", "T"));
-            ui.checkbox(&mut prefs.sky_view, key("Plate solve annotation", "P"));
-            ui.add_space(10.0);
+                        ui.label(egui::RichText::new("On start").strong());
+                        ui.checkbox(&mut prefs.show_info, key("Info overlay", "I"));
+                        ui.checkbox(&mut prefs.show_debug, key("Debug info", "D"));
+                        ui.checkbox(&mut prefs.actual_size, key("Zoom 1:1", "Z"));
+                        ui.add_space(10.0);
 
-            if ui.button(key("Close", "Esc")).clicked() {
-                close = true;
-            }
-        });
+                        ui.label(egui::RichText::new("Apply to every image").strong());
+                        ui.checkbox(&mut prefs.auto_stretch, key("Auto stretch", "A"));
+                        let label = match prefs.boost {
+                            0 => "Stretch boost off".to_string(),
+                            n => format!("Stretch boost +{}%", n * BOOST_STEP_PERCENT),
+                        };
+                        let label = key(&label, "+/-");
+                        dragging |= ui
+                            .add(slider(&mut prefs.boost, 0..=MAX_BOOST, label))
+                            .dragged();
+                        ui.checkbox(&mut prefs.neutralize, key("Background neutralization", "N"));
+                        ui.checkbox(&mut prefs.flash_clip, key("Flashing clipped pixels", "C"));
+                        ui.checkbox(&mut prefs.star_view, key("Star sizes", "S"));
+                        ui.checkbox(&mut prefs.tilt_view, key("Sensor tilt", "T"));
+                        ui.checkbox(&mut prefs.sky_view, key("Plate solve annotation", "P"));
+                    });
+                ui.add_space(10.0);
+
+                if ui.button(key("Close", "Esc")).clicked() {
+                    close = true;
+                }
+            });
         let toggled = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma));
         let closing = close || toggled || modal.should_close();
         self.prefs_draft = (dragging && !closing).then_some(prefs);
