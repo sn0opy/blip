@@ -31,7 +31,7 @@ pub fn wgpu_options(backend: Option<&str>, present: Option<&str>) -> WgpuConfigu
                     .max_by_key(|a| {
                         let info = a.get_info();
                         (
-                            info.backend == Backend::Vulkan,
+                            info.backend == Backend::Dx12,
                             info.device_type == wgpu::DeviceType::DiscreteGpu,
                         )
                     })
