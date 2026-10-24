@@ -53,9 +53,12 @@ impl App {
         let rows = self.tree.visible_rows();
         let row_h = ui.spacing().interact_size.y;
         let spacing = ui.spacing().item_spacing.y;
-        let mut area = egui::ScrollArea::both().auto_shrink([false, false]);
+        let scroll_salt = "file_list_scroll";
+        let mut area = egui::ScrollArea::both()
+            .auto_shrink([false, false])
+            .id_salt(scroll_salt);
         if self.scroll_to_selected {
-            let id = ui.make_persistent_id("file_list_scroll");
+            let id = ui.make_persistent_id(egui::IdSalt::new(scroll_salt));
             let offset =
                 egui::scroll_area::State::load(ui.ctx(), id).map_or(0.0, |s| s.clamped_offset().y);
             let view_h = ui.available_height();
@@ -73,26 +76,25 @@ impl App {
         let mut clicked = None;
         let mut menu_file = None;
         let mut menu_action = None;
-        area.id_salt("file_list_scroll")
-            .show_rows(ui, row_h, rows.len(), |ui, range| {
-                for row in &rows[range] {
-                    let button = self
-                        .tree_row_button(ui, row)
-                        .wrap_mode(egui::TextWrapMode::Extend)
-                        .min_size(Vec2::new(ui.available_width(), row_h));
-                    let response = ui.add(button);
-                    if response.clicked() {
-                        clicked = Some((*row).clone());
-                    }
-                    if let Row::Image { index, .. } = row {
-                        let path = &self.files[*index];
-                        response.context_menu(|ui| {
-                            menu_action = self.file_menu(ui, path);
-                            menu_file = Some(path.clone());
-                        });
-                    }
+        area.show_rows(ui, row_h, rows.len(), |ui, range| {
+            for row in &rows[range] {
+                let button = self
+                    .tree_row_button(ui, row)
+                    .wrap_mode(egui::TextWrapMode::Extend)
+                    .min_size(Vec2::new(ui.available_width(), row_h));
+                let response = ui.add(button);
+                if response.clicked() {
+                    clicked = Some((*row).clone());
                 }
-            });
+                if let Row::Image { index, .. } = row {
+                    let path = &self.files[*index];
+                    response.context_menu(|ui| {
+                        menu_action = self.file_menu(ui, path);
+                        menu_file = Some(path.clone());
+                    });
+                }
+            }
+        });
         self.handle_file_menu(ui.ctx(), menu_file, menu_action);
         match clicked {
             Some(Row::Image { index, .. }) => self.select(index),
