@@ -1,7 +1,7 @@
 //! Minimal FITS reader: 2D (mono / Bayer) or 3D (RGB planes) images from the primary
 //! HDU or, if that is empty, the first IMAGE extension.
 
-use crate::image::{Bayer, Image, Source, lookup, parse_float, parse_int, read_data};
+use crate::image::{Bayer, Card, Image, Source, lookup, parse_float, parse_int, read_data};
 use rayon::prelude::*;
 
 const BLOCK: usize = 2880;
@@ -15,11 +15,12 @@ type Header = Vec<(String, String)>;
 pub(crate) fn read(file: &mut Source, head: Vec<u8>, len: usize) -> Result<Image, String> {
     // Longer headers and extension images take the slow path.
     let slow = |file: &mut Source| parse(&file.read_all().map_err(|e| e.to_string())?);
-    let (header, data_start) = match parse_header(&head) {
+    let (cards, data_start) = match parse_header(&head) {
         Ok(h) => h,
         Err(e) if e == TRUNCATED_HEADER && head.len() < len => return slow(file),
         Err(e) => return Err(e),
     };
+    let header = values(&cards);
     if header_int(&header, "NAXIS")? == Some(0) {
         return slow(file);
     }
@@ -36,15 +37,17 @@ pub(crate) fn read(file: &mut Source, head: Vec<u8>, len: usize) -> Result<Image
         read_data(file, &head, data_start, &mut bytes)?;
         decode(&bytes, &layout)?
     };
-    Ok(layout.into_image(data, header))
+    Ok(layout.into_image(data, header, cards))
 }
 
 pub fn parse(bytes: &[u8]) -> Result<Image, String> {
-    let (mut header, mut data_start) = parse_header(bytes)?;
+    let (mut cards, mut data_start) = parse_header(bytes)?;
+    let mut header = values(&cards);
     let layout = if header_int(&header, "NAXIS")? == Some(0) {
         let (ext, layout, start) = find_image_extension(bytes, data_start)?;
         // Extension keywords take precedence; the primary ones are inherited.
-        header = ext.into_iter().chain(header).collect();
+        header = values(&ext).into_iter().chain(header).collect();
+        cards.extend(ext);
         data_start = start;
         layout
     } else {
@@ -52,17 +55,21 @@ pub fn parse(bytes: &[u8]) -> Result<Image, String> {
     };
     layout.check_size(data_start, bytes.len())?;
     let data = decode(&bytes[data_start..data_start + layout.data_len], &layout)?;
-    Ok(layout.into_image(data, header))
+    Ok(layout.into_image(data, header, cards))
 }
 
 /// Walk the extension HDUs after the primary one for the first IMAGE with data.
-fn find_image_extension(bytes: &[u8], mut pos: usize) -> Result<(Header, Layout, usize), String> {
+fn find_image_extension(
+    bytes: &[u8],
+    mut pos: usize,
+) -> Result<(Vec<Card>, Layout, usize), String> {
     loop {
         let rest = bytes.get(pos..).unwrap_or_default();
         if !rest.starts_with(b"XTENSION") {
             return Err("no image data in file".into());
         }
-        let (ext, len) = parse_cards(rest)?;
+        let (cards, len) = parse_cards(rest)?;
+        let ext = values(&cards);
         let start = pos + len;
         let kind = lookup(&ext, "XTENSION").unwrap_or_default();
         if kind == "BINTABLE" && lookup(&ext, "ZIMAGE") == Some("T") {
@@ -70,7 +77,7 @@ fn find_image_extension(bytes: &[u8], mut pos: usize) -> Result<(Header, Layout,
         }
         if kind == "IMAGE" && header_int(&ext, "NAXIS")? != Some(0) {
             let layout = Layout::new(&ext)?;
-            return Ok((ext, layout, start));
+            return Ok((cards, layout, start));
         }
         pos = hdu_data_len(&ext)?
             .checked_next_multiple_of(BLOCK)
@@ -108,7 +115,7 @@ fn hdu_data_len(header: &[(String, String)]) -> Result<usize, String> {
         .ok_or_else(|| "invalid extension size".into())
 }
 
-fn parse_header(bytes: &[u8]) -> Result<(Header, usize), String> {
+fn parse_header(bytes: &[u8]) -> Result<(Vec<Card>, usize), String> {
     if !bytes.starts_with(b"SIMPLE  =") {
         return Err("not a FITS file".into());
     }
@@ -116,8 +123,8 @@ fn parse_header(bytes: &[u8]) -> Result<(Header, usize), String> {
 }
 
 /// Parse header cards up to END. Returns the cards and the block-aligned header length.
-fn parse_cards(bytes: &[u8]) -> Result<(Header, usize), String> {
-    let mut header = Vec::new();
+fn parse_cards(bytes: &[u8]) -> Result<(Vec<Card>, usize), String> {
+    let mut cards = Vec::new();
     for (i, card) in bytes.as_chunks::<CARD>().0.iter().enumerate() {
         let key = std::str::from_utf8(&card[..8])
             .ok()
@@ -125,21 +132,30 @@ fn parse_cards(bytes: &[u8]) -> Result<(Header, usize), String> {
             .ok_or("invalid header keyword")?
             .trim_end();
         if key == "END" {
-            return Ok((header, ((i + 1) * CARD).div_ceil(BLOCK) * BLOCK));
+            return Ok((cards, ((i + 1) * CARD).div_ceil(BLOCK) * BLOCK));
         }
-        if &card[8..10] != b"= " {
-            continue;
+        let (value, comment) = if &card[8..10] == b"= " {
+            let (value, comment) = parse_value(&card[10..]);
+            (Some(value), comment)
+        } else {
+            (None, text(card[8..].trim_ascii()))
+        };
+        if !key.is_empty() || !comment.is_empty() {
+            cards.push(Card {
+                key: key.to_string(),
+                value,
+                comment,
+            });
         }
-        header.push((key.to_string(), parse_value(&card[10..])));
     }
     Err(TRUNCATED_HEADER.into())
 }
 
-/// Value field of a card with quotes and comment removed. Works on bytes so stray
+/// Value (without quotes) and comment of a card's value field. Works on bytes so stray
 /// non-ASCII (often Latin-1) characters in comments don't break parsing.
-pub(crate) fn parse_value(raw: &[u8]) -> String {
+pub(crate) fn parse_value(raw: &[u8]) -> (String, String) {
     let raw = raw.trim_ascii();
-    if let Some(rest) = raw.strip_prefix(b"'") {
+    let (value, rest) = if let Some(rest) = raw.strip_prefix(b"'") {
         // Quoted string; '' is an escaped quote.
         let mut out = Vec::new();
         let mut i = 0;
@@ -151,18 +167,27 @@ pub(crate) fn parse_value(raw: &[u8]) -> String {
                 out.push(b'\'');
                 i += 2;
             } else {
+                i += 1;
                 break;
             }
         }
-        text(out.trim_ascii_end())
+        (text(out.trim_ascii_end()), &rest[i..])
     } else {
-        text(
-            raw.split(|&b| b == b'/')
-                .next()
-                .unwrap_or_default()
-                .trim_ascii(),
-        )
-    }
+        let end = raw.iter().position(|&b| b == b'/').unwrap_or(raw.len());
+        (text(raw[..end].trim_ascii()), &raw[end..])
+    };
+    let comment = match rest.iter().position(|&b| b == b'/') {
+        Some(slash) => text(rest[slash + 1..].trim_ascii()),
+        None => String::new(),
+    };
+    (value, comment)
+}
+
+fn values(cards: &[Card]) -> Header {
+    cards
+        .iter()
+        .filter_map(|c| Some((c.key.clone(), c.value.clone()?)))
+        .collect()
 }
 
 /// UTF-8 if valid, otherwise Latin-1.
@@ -264,7 +289,7 @@ impl Layout {
         }
     }
 
-    fn into_image(self, data: Vec<u16>, header: Vec<(String, String)>) -> Image {
+    fn into_image(self, data: Vec<u16>, header: Header, cards: Vec<Card>) -> Image {
         Image {
             width: self.width,
             height: self.height,
@@ -272,6 +297,7 @@ impl Layout {
             data,
             bayer: self.bayer,
             header,
+            cards,
         }
     }
 }
@@ -453,13 +479,30 @@ mod tests {
             ],
             &[],
         );
-        let (h, start) = parse_header(&bytes).unwrap();
+        let (cards, start) = parse_header(&bytes).unwrap();
         assert_eq!(start, BLOCK);
+        let h = values(&cards);
         assert_eq!(lookup(&h, "OBJECT"), Some("M 15 'core'"));
         assert_eq!(lookup(&h, "PATH"), Some("a/b"));
         assert_eq!(lookup(&h, "EXPTIME"), Some("120.0"));
         assert_eq!(lookup(&h, "COMMENT"), None);
         assert_eq!(lookup(&h, "SIMPLE"), Some("T"));
+
+        let card = |key: &str, value: Option<&str>, comment: &str| Card {
+            key: key.into(),
+            value: value.map(Into::into),
+            comment: comment.into(),
+        };
+        assert_eq!(
+            cards,
+            [
+                card("SIMPLE", Some("T"), "conforms"),
+                card("OBJECT", Some("M 15 'core'"), "it's a / comment"),
+                card("PATH", Some("a/b"), ""),
+                card("EXPTIME", Some("120.0"), "[s]"),
+                card("COMMENT", None, "this card = has no value indicator"),
+            ]
+        );
     }
 
     #[test]
@@ -468,7 +511,8 @@ mod tests {
         let mut cards = vec!["SIMPLE  =                    T"];
         cards.extend(many.iter().map(String::as_str));
         let mut bytes = fits_bytes(&cards, &[]);
-        let (h, start) = parse_header(&bytes).unwrap();
+        let (cards, start) = parse_header(&bytes).unwrap();
+        let h = values(&cards);
         assert_eq!(start, 2 * BLOCK);
         assert_eq!(h.len(), 41);
         assert_eq!(lookup(&h, "KEY39"), Some("39"));
@@ -496,8 +540,10 @@ mod tests {
             assert_eq!(bytes[pos], b'x');
             bytes[pos] = if pos < 2 * CARD { 0xB0 } else { 0xFC };
         }
-        let (h, _) = parse_header(&bytes).unwrap();
+        let (cards, _) = parse_header(&bytes).unwrap();
+        let h = values(&cards);
         assert_eq!(lookup(&h, "CCD-TEMP"), Some("-9.8"));
+        assert_eq!(cards[1].comment, "temperature in °C");
         assert_eq!(lookup(&h, "SITE"), Some("München"));
         // Non-ASCII keyword is rejected.
         bytes[CARD] = 0xB0;
@@ -708,6 +754,12 @@ mod tests {
         assert_eq!(img.bayer, Some(Bayer::Gbrg));
         assert_eq!(img.get_f64("EXPTIME"), Some(30.0));
         assert_eq!(img.get("XTENSION"), Some("IMAGE"));
+        let keys: Vec<&str> = img.cards.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            keys[..6],
+            ["SIMPLE", "BITPIX", "NAXIS", "EXTEND", "EXPTIME", "XTENSION"]
+        );
+        assert_eq!(keys.len(), 13);
 
         let fz = fits_bytes(
             &[

@@ -5,7 +5,8 @@ use eframe::egui::{self, Key, Modifiers, Vec2};
 
 impl App {
     pub(super) fn handle_keys(&mut self, ctx: &egui::Context) {
-        if self.confirm_delete.is_some() || self.show_help || self.show_settings {
+        if self.confirm_delete.is_some() || self.show_help || self.show_settings || self.show_header
+        {
             return;
         }
         let pressed = |key: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key));
@@ -46,6 +47,9 @@ impl App {
         }
         if pressed(Key::F5) || pressed_cmd(Key::R) {
             self.refresh();
+        }
+        if pressed(Key::H) && self.current().is_some() {
+            self.open_header();
         }
         if pressed(Key::I) {
             self.show_info = !self.show_info;

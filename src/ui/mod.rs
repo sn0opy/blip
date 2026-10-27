@@ -4,6 +4,7 @@
 mod dialogs;
 mod draw;
 mod gpu;
+mod header;
 mod keys;
 mod loader;
 mod menu;
@@ -164,6 +165,8 @@ pub struct App {
     confirm_delete: Option<PathBuf>,
     show_help: bool,
     show_settings: bool,
+    show_header: bool,
+    header_sort: Option<header::Sort>,
     /// The settings dialog's values while a slider is dragged, applied on release.
     prefs_draft: Option<Preferences>,
     scroll_to_selected: bool,
@@ -292,6 +295,8 @@ impl App {
             confirm_delete: None,
             show_help: false,
             show_settings: false,
+            show_header: false,
+            header_sort: None,
             prefs_draft: None,
             scroll_to_selected: false,
             status: None,
@@ -752,6 +757,7 @@ impl eframe::App for App {
         self.delete_dialog(&ctx);
         self.help_dialog(&ctx);
         self.settings_dialog(&ctx);
+        self.header_dialog(&ctx);
 
         egui::Panel::left("files")
             .resizable(true)

@@ -3,6 +3,7 @@ use super::{App, MAX_SIDE, file_name};
 use blip_core::process::{BOOST_STEP_PERCENT, MAX_BOOST};
 use eframe::egui::{self, Color32, Key, Modifiers};
 
+pub(super) const DIALOG_WIDTH: f32 = 380.0;
 /// The heading, Close button, frame and a gap to the window's edges.
 const SETTINGS_FIXED_HEIGHT: f32 = 140.0;
 
@@ -26,6 +27,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("B", "Toggle binned preview / full resolution"),
     ("N", "Toggle background neutralization (white balance)"),
     ("I", "Toggle info overlay"),
+    ("H", "Show all header entries"),
     ("D", "Toggle debug info (timings, stretch, cache, GPU)"),
     ("E, Ctrl+S", "Export as PNG / JPEG (full resolution)"),
     ("O, Ctrl+O", "Open folder"),
@@ -35,7 +37,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
 ];
 
 /// `text (key)` with the key styled as in the shortcuts dialog.
-fn with_key(style: &egui::Style, text: &str, key: &str) -> egui::text::LayoutJob {
+pub(super) fn with_key(style: &egui::Style, text: &str, key: &str) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
     let font = egui::FontSelection::Default;
     let align = egui::Align::Center;
@@ -106,7 +108,7 @@ impl App {
         let modal = egui::Modal::new(egui::Id::unique("settings"))
             .frame(frame)
             .show(ctx, |ui| {
-                ui.set_width(380.0 + f32::from(scrollbar_margin.right));
+                ui.set_width(DIALOG_WIDTH + f32::from(scrollbar_margin.right));
                 let style = ui.style().clone();
                 let key = |text: &str, key: &str| with_key(&style, text, key);
                 ui.heading("Settings");
@@ -239,7 +241,7 @@ impl App {
         };
         let mut decision = None;
         let modal = egui::Modal::new(egui::Id::unique("confirm_delete")).show(ctx, |ui| {
-            ui.set_width(380.0);
+            ui.set_width(DIALOG_WIDTH);
             ui.heading("Delete file?");
             ui.add_space(4.0);
             ui.label(egui::RichText::new(file_name(&path)).strong());

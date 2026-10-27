@@ -22,6 +22,7 @@ const REVEAL: &str = "Open containing folder";
 pub(super) enum MenuAction {
     Status(String),
     Export(PathBuf),
+    Header(PathBuf),
     Delete(PathBuf),
 }
 
@@ -40,6 +41,12 @@ impl App {
         match action {
             Some(MenuAction::Status(text)) => self.set_status(text, Some(2.5)),
             Some(MenuAction::Export(path)) => self.export(ctx, path),
+            Some(MenuAction::Header(path)) => {
+                if let Some(i) = self.files.iter().position(|p| *p == path) {
+                    self.select(i);
+                    self.open_header();
+                }
+            }
             Some(MenuAction::Delete(path)) => self.confirm_delete = Some(path),
             None => {}
         }
@@ -121,6 +128,9 @@ impl App {
         if ui.button("Copy file path").clicked() {
             ui.ctx().copy_text(path.display().to_string());
             action = status("Copied file path");
+        }
+        if ui.button("Show header…").clicked() {
+            action = Some(MenuAction::Header(path.to_path_buf()));
         }
         if ui.button("Export…").clicked() {
             action = Some(MenuAction::Export(path.to_path_buf()));

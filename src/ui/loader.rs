@@ -76,6 +76,7 @@ pub struct Loaded {
     pub clip: process::ClipStats,
     pub stretch: process::StretchInfo,
     pub bayer: Option<image::Bayer>,
+    pub cards: Vec<image::Card>,
 }
 
 impl Loaded {
@@ -554,6 +555,7 @@ fn load(
         clip,
         stretch: r.stretch,
         bayer: img.bayer,
+        cards: img.cards.clone(),
     };
     let raw = Raw {
         path: path.to_path_buf(),

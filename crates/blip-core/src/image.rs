@@ -100,6 +100,16 @@ pub struct Image {
     /// XISF images list their FITS keywords, followed by values taken from XISF properties
     /// that have no keyword (see `xisf::PROPERTIES`).
     pub header: Vec<(String, String)>,
+    /// Every header entry in file order.
+    pub cards: Vec<Card>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Card {
+    pub key: String,
+    /// `None` for commentary cards (COMMENT, HISTORY, …).
+    pub value: Option<String>,
+    pub comment: String,
 }
 
 impl Image {

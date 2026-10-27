@@ -5,11 +5,13 @@
 //! a crop mask to its masters), checksums and the orientation attribute are ignored.
 
 use crate::fits::parse_value;
-use crate::image::{Bayer, Image, Source, lookup, read_data};
+use crate::image::{Bayer, Card, Image, Source, lookup, read_data};
 use quick_xml::XmlVersion;
 use quick_xml::escape::resolve_predefined_entity;
 use quick_xml::events::{BytesStart, Event};
 use rayon::prelude::*;
+
+type Keywords = Vec<(String, String)>;
 
 pub(crate) const SIGNATURE: &[u8] = b"XISF0100";
 /// Signature, header length and a reserved field precede the XML header.
@@ -312,9 +314,9 @@ pub(crate) fn read(file: &mut Source, mut head: Vec<u8>, len: usize) -> Result<I
         file.read_exact(&mut head[have..])
             .map_err(|e| e.to_string())?;
     }
-    let (layout, header) = parse_header(&head[PREFIX..end])?;
+    let (layout, header, cards) = parse_header(&head[PREFIX..end])?;
     layout.check_size(len)?;
-    decode(layout, header, |l, dst| match &l.compression {
+    decode(layout, header, cards, |l, dst| match &l.compression {
         None => read_data(file, &head, l.pos, dst),
         Some(c) => {
             let mut src = vec![0u8; l.len];
@@ -332,9 +334,9 @@ pub fn parse(bytes: &[u8]) -> Result<Image, String> {
     let xml = bytes
         .get(PREFIX..end)
         .ok_or("file truncated in XISF header")?;
-    let (layout, header) = parse_header(xml)?;
+    let (layout, header, cards) = parse_header(xml)?;
     layout.check_size(bytes.len())?;
-    decode(layout, header, |l, dst| {
+    decode(layout, header, cards, |l, dst| {
         let src = &bytes[l.pos..l.pos + l.len];
         match &l.compression {
             None => {
@@ -358,13 +360,14 @@ fn header_end(bytes: &[u8]) -> Result<usize, String> {
 
 /// The first top-level image's layout and its FITS keywords, followed by the keywords
 /// derived from [`PROPERTIES`].
-fn parse_header(xml: &[u8]) -> Result<(Layout, Vec<(String, String)>), String> {
+fn parse_header(xml: &[u8]) -> Result<(Layout, Keywords, Vec<Card>), String> {
     let xml = std::str::from_utf8(xml).map_err(|_| "XISF header is not valid UTF-8")?;
     let err = |e: quick_xml::Error| format!("invalid XISF header: {e}");
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut depth = 0;
     let mut layout = None;
     let mut keywords = Vec::new();
+    let mut cards = Vec::new();
     let mut properties = Vec::new();
     // Keyword of the String property whose text content is being read.
     let mut text_for: Option<&str> = None;
@@ -415,9 +418,22 @@ fn parse_header(xml: &[u8]) -> Result<(Layout, Vec<(String, String)>), String> {
             (2, "FITSKeyword") if layout.is_some() => {
                 let a = attributes(&e)?;
                 let name = lookup(&a, "name").unwrap_or_default().trim();
-                if !name.is_empty() && !matches!(name, "COMMENT" | "HISTORY") {
-                    let value = parse_value(lookup(&a, "value").unwrap_or_default().as_bytes());
-                    keywords.push((name.to_string(), value));
+                let comment = lookup(&a, "comment").unwrap_or_default().trim().to_string();
+                let value = if matches!(name, "COMMENT" | "HISTORY") {
+                    None
+                } else {
+                    let value = parse_value(lookup(&a, "value").unwrap_or_default().as_bytes()).0;
+                    if !name.is_empty() {
+                        keywords.push((name.to_string(), value.clone()));
+                    }
+                    Some(value)
+                };
+                if !name.is_empty() || !comment.is_empty() {
+                    cards.push(Card {
+                        key: name.to_string(),
+                        value,
+                        comment,
+                    });
                 }
             }
             (2, "Property") if layout.is_some() => {
@@ -454,7 +470,7 @@ fn parse_header(xml: &[u8]) -> Result<(Layout, Vec<(String, String)>), String> {
             keywords.push((key, value));
         }
     }
-    Ok((layout, keywords))
+    Ok((layout, keywords, cards))
 }
 
 fn attributes(e: &BytesStart) -> Result<Vec<(String, String)>, String> {
@@ -474,7 +490,8 @@ fn attributes(e: &BytesStart) -> Result<Vec<(String, String)>, String> {
 /// block into the buffer it gets.
 fn decode(
     l: Layout,
-    header: Vec<(String, String)>,
+    header: Keywords,
+    cards: Vec<Card>,
     fill: impl FnOnce(&Layout, &mut [u8]) -> Result<(), String>,
 ) -> Result<Image, String> {
     let data = if l.is_native_u16() {
@@ -505,6 +522,7 @@ fn decode(
         data,
         bayer,
         header,
+        cards,
     })
 }
 
@@ -734,6 +752,17 @@ mod tests {
         assert_eq!(img.get_f64("CCD-TEMP"), Some(-10.5));
         assert_eq!(img.get("COMMENT"), None);
         assert_eq!(img.get("GAIN"), None);
+        let cards: Vec<_> = (img.cards.iter())
+            .map(|c| (c.key.as_str(), c.value.as_deref(), c.comment.as_str()))
+            .collect();
+        assert_eq!(
+            cards,
+            [
+                ("OBJECT", Some("M 15 'core'"), "target"),
+                ("EXPTIME", Some("120."), "[s]"),
+                ("COMMENT", None, "a comment"),
+            ]
+        );
         assert_eq!(img.bayer, None);
 
         let raw = bytes(&[1u16, 65534], u16::to_be_bytes);

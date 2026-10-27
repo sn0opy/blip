@@ -40,6 +40,7 @@ cargo build --release
 | <kbd>B</kbd> | Toggle binned preview / full resolution |
 | <kbd>N</kbd> | Toggle background neutralization (white balance) |
 | <kbd>I</kbd> | Toggle info overlay |
+| <kbd>H</kbd> | Show all header entries |
 | <kbd>D</kbd> | Toggle debug info (timings, stretch, cache, GPU) |
 | <kbd>E</kbd> or <kbd>Ctrl</kbd>+<kbd>S</kbd> | Export as PNG / JPEG (full resolution) |
 | <kbd>O</kbd> or <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open folder |
