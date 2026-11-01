@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "blip"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "ash",
  "blip-core",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "blip-core"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "bytemuck",
  "flate2",
