@@ -7,6 +7,8 @@ use blip_core::wcs::Wcs;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::cell::RefCell;
 
+pub const PANEL_RADIUS: f32 = 4.0;
+
 /// Circle every measured star and label it with its HFR.
 pub fn stars(
     painter: &egui::Painter,
@@ -90,7 +92,11 @@ pub fn text_box_aligned(
     );
     let pos = align.anchor_size(pos, galley.size()).min;
     let bg = Rect::from_min_size(pos, galley.size()).expand(5.0);
-    painter.rect_filled(bg, 4.0, Color32::from_black_alpha((160.0 * alpha) as u8));
+    painter.rect_filled(
+        bg,
+        PANEL_RADIUS,
+        Color32::from_black_alpha((160.0 * alpha) as u8),
+    );
     painter.galley(pos, galley, Color32::WHITE);
 }
 
@@ -107,8 +113,16 @@ pub fn thousands(n: u64) -> String {
     out
 }
 
-/// RA / Dec grid, deep-sky objects and a north / east compass.
-pub fn sky(painter: &egui::Painter, view: Rect, img_rect: Rect, src_size: [usize; 2], wcs: &Wcs) {
+/// RA / Dec grid, deep-sky objects and a north / east compass. The compass stays above
+/// the bottom `bottom_inset` of the view.
+pub fn sky(
+    painter: &egui::Painter,
+    view: Rect,
+    bottom_inset: f32,
+    img_rect: Rect,
+    src_size: [usize; 2],
+    wcs: &Wcs,
+) {
     let sky = SkyPainter {
         painter,
         clipped: painter.with_clip_rect(img_rect.intersect(view)),
@@ -120,7 +134,7 @@ pub fn sky(painter: &egui::Painter, view: Rect, img_rect: Rect, src_size: [usize
         taken_label_space: RefCell::new(Vec::new()),
     };
     let extent = sky.extent();
-    sky.compass(&extent);
+    sky.compass(&extent, bottom_inset);
     sky.deep_sky_objects(&extent);
     sky.grid(&extent);
 }
@@ -358,11 +372,13 @@ impl SkyPainter<'_> {
         }
     }
 
-    fn compass(&self, e: &SkyExtent) {
+    fn compass(&self, e: &SkyExtent, bottom_inset: f32) {
         let Some((north, east)) = self.north_and_east(e.center.0, e.center.1) else {
             return;
         };
-        let origin = self.img_rect.intersect(self.view).right_bottom() - Vec2::splat(60.0);
+        let mut corner = self.img_rect.intersect(self.view).right_bottom();
+        corner.y = corner.y.min(self.view.bottom() - bottom_inset);
+        let origin = corner - Vec2::splat(60.0);
         let white = Color32::from_gray(230);
         for (direction, name) in [(north, "N"), (east, "E")] {
             (self.painter).arrow(origin, direction * 36.0, egui::Stroke::new(1.5, white));

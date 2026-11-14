@@ -98,6 +98,7 @@ pub struct Preferences {
     pub star_view: bool,
     pub tilt_view: bool,
     pub sky_view: bool,
+    pub show_toolbar: bool,
 }
 
 impl Default for Preferences {
@@ -118,6 +119,7 @@ impl Default for Preferences {
             star_view: false,
             tilt_view: false,
             sky_view: false,
+            show_toolbar: true,
         }
     }
 }
@@ -188,7 +190,7 @@ impl Preferences {
         }
     }
 
-    fn flags(&mut self) -> [(&'static str, &mut bool); 9] {
+    fn flags(&mut self) -> [(&'static str, &mut bool); 10] {
         [
             ("show_info", &mut self.show_info),
             ("show_debug", &mut self.show_debug),
@@ -199,6 +201,7 @@ impl Preferences {
             ("star_view", &mut self.star_view),
             ("tilt_view", &mut self.tilt_view),
             ("sky_view", &mut self.sky_view),
+            ("show_toolbar", &mut self.show_toolbar),
         ]
     }
 }
@@ -249,6 +252,7 @@ mod tests {
             star_view: true,
             tilt_view: true,
             sky_view: true,
+            show_toolbar: false,
         };
         let mut storage = MapStorage::default();
         prefs.save(&mut storage);

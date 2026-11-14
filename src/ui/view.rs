@@ -138,6 +138,8 @@ impl App {
         );
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::BLACK);
+        let toolbar_height = self.toolbar(ui.ctx(), rect);
+        let bottom_left = rect.left_bottom() - Vec2::new(0.0, toolbar_height);
 
         let current = self.current().cloned();
         if let Some(cur) = &current
@@ -223,7 +225,14 @@ impl App {
                     && self.sky_view.is_on(path)
                     && let Some(Ok(sol)) = stars.map(|s| &s.solution)
                 {
-                    draw::sky(&painter, rect, img_rect, loaded.src_size, &sol.wcs);
+                    draw::sky(
+                        &painter,
+                        rect,
+                        toolbar_height,
+                        img_rect,
+                        loaded.src_size,
+                        &sol.wcs,
+                    );
                 }
             }
 
@@ -261,12 +270,7 @@ impl App {
         if let Some(cur) = &current {
             if let Some(err) = self.errors.get(cur) {
                 let text = format!("{}: {err}", file_name(cur));
-                draw::text_box(
-                    &painter,
-                    rect.left_bottom() + Vec2::new(10.0, -48.0),
-                    &text,
-                    1.0,
-                );
+                draw::text_box(&painter, bottom_left + Vec2::new(10.0, -48.0), &text, 1.0);
             } else if !self.cache.contains_key(cur) {
                 let spinner_rect = Rect::from_min_size(
                     rect.right_top() + Vec2::new(-34.0, 10.0),
@@ -275,7 +279,7 @@ impl App {
                 ui.put(spinner_rect, egui::Spinner::new().size(22.0));
             }
         }
-        self.status_line(ui, &painter, rect);
+        self.status_line(ui, &painter, bottom_left);
     }
 
     /// Mouse wheel zooms around the cursor, dragging pans, double-click resets.
@@ -372,7 +376,7 @@ impl App {
         lines.join("\n")
     }
 
-    fn status_line(&mut self, ui: &egui::Ui, painter: &egui::Painter, rect: Rect) {
+    fn status_line(&mut self, ui: &egui::Ui, painter: &egui::Painter, bottom_left: Pos2) {
         let Some(status) = &self.status else { return };
         let age = status.since.elapsed().as_secs_f32();
         let alpha = match status.ttl {
@@ -383,7 +387,7 @@ impl App {
             self.status = None;
             return;
         }
-        let pos = rect.left_bottom() + Vec2::new(10.0, -26.0);
+        let pos = bottom_left + Vec2::new(10.0, -26.0);
         draw::text_box(painter, pos, &status.text, alpha);
         match status.ttl {
             Some(ttl) if age < ttl => ui.ctx().request_repaint_after_secs(ttl - age),

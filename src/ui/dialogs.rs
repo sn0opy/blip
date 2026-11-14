@@ -152,6 +152,10 @@ impl App {
                         });
                         ui.add_space(10.0);
 
+                        ui.label(egui::RichText::new("Toolbar").strong());
+                        ui.checkbox(&mut prefs.show_toolbar, "Show toolbar");
+                        ui.add_space(10.0);
+
                         ui.label(egui::RichText::new("On start").strong());
                         ui.checkbox(&mut prefs.show_info, with_action_key(Action::Info));
                         ui.checkbox(&mut prefs.show_debug, with_action_key(Action::Debug));

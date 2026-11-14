@@ -12,6 +12,7 @@ mod menu;
 mod prefs;
 mod scan;
 mod texture;
+mod toolbar;
 mod tree;
 mod view;
 
