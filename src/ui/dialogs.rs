@@ -1,5 +1,5 @@
 use super::actions::{self, Action, SHORTCUTS, with_key};
-use super::prefs::{BinningPref, MAX_PREFETCH, MAX_SUBFOLDER_DEPTH, SubjectOrder};
+use super::prefs::{BinningPref, MAX_PREFETCH, MAX_SUBFOLDER_DEPTH, Preferences, SubjectOrder};
 use super::{App, MAX_SIDE, file_name};
 use blip_core::process::{BOOST_STEP_PERCENT, MAX_BOOST};
 use eframe::egui::{self, Color32, Key, Modifiers};
@@ -8,36 +8,25 @@ pub(super) const DIALOG_WIDTH: f32 = 380.0;
 /// The heading, Close button, frame and a gap to the window's edges.
 const SETTINGS_FIXED_HEIGHT: f32 = 140.0;
 
-/// Without the value box, which would be a text field.
-fn slider<'a, N: egui::emath::Numeric>(
-    value: &'a mut N,
-    range: std::ops::RangeInclusive<N>,
-    label: impl Into<egui::WidgetText>,
-) -> egui::Slider<'a> {
-    egui::Slider::new(value, range)
-        .show_value(false)
-        .text(label)
-}
-
 impl App {
     pub(super) fn help_dialog(&mut self, ctx: &egui::Context) {
         if !self.show_help {
             return;
         }
+        let grid = egui::Grid::new("shortcuts")
+            .num_columns(2)
+            .spacing([24.0, 6.0]);
         let modal = egui::Modal::new(egui::Id::unique("help")).show(ctx, |ui| {
             ui.heading("Keyboard shortcuts");
             ui.add_space(6.0);
-            egui::Grid::new("shortcuts")
-                .num_columns(2)
-                .spacing([24.0, 6.0])
-                .show(ui, |ui| {
-                    for shortcut in SHORTCUTS {
-                        let keys = actions::platform_keys(shortcut.keys);
-                        ui.label(egui::RichText::new(keys).monospace().strong());
-                        ui.label(shortcut.description);
-                        ui.end_row();
-                    }
-                });
+            grid.show(ui, |ui| {
+                for shortcut in SHORTCUTS {
+                    let keys = actions::platform_keys(shortcut.keys);
+                    ui.label(egui::RichText::new(keys).monospace().strong());
+                    ui.label(shortcut.description);
+                    ui.end_row();
+                }
+            });
             ui.add_space(6.0);
             let close = format!("Press {} or Esc to close", actions::key_hint(Action::Help));
             ui.label(egui::RichText::new(close).weak());
@@ -54,139 +43,27 @@ impl App {
             return;
         }
         let mut prefs = self.prefs_draft.unwrap_or(self.prefs);
-        let mut close = false;
-        let mut dragging = false;
+        let gpu_limit = self.loader.max_texture_side();
         let mut frame = egui::Frame::popup(&ctx.global_style());
         let scrollbar_margin = egui::Margin {
             right: std::mem::take(&mut frame.inner_margin.right),
             ..egui::Margin::ZERO
         };
-        let modal = egui::Modal::new(egui::Id::unique("settings"))
-            .frame(frame)
-            .show(ctx, |ui| {
-                ui.set_width(DIALOG_WIDTH + f32::from(scrollbar_margin.right));
-                let style = ui.style().clone();
-                let with_action_key = |action: Action| actions::label(&style, action);
-                ui.heading("Settings");
-                ui.add_space(8.0);
-
-                let max_height = ctx.content_rect().height() - SETTINGS_FIXED_HEIGHT;
-                egui::ScrollArea::vertical()
-                    .max_height(max_height)
-                    .auto_shrink([false, true])
-                    .content_margin(scrollbar_margin)
-                    .show(ui, |ui| {
-                        ui.label(egui::RichText::new("Folder").strong());
-                        let label = match prefs.subfolder_depth {
-                            0 => "Only the opened folder".to_string(),
-                            1 => "Subfolders 1 level deep".to_string(),
-                            n => format!("Subfolders up to {n} levels deep"),
-                        };
-                        dragging |= ui
-                            .add(slider(
-                                &mut prefs.subfolder_depth,
-                                0..=MAX_SUBFOLDER_DEPTH,
-                                label,
-                            ))
-                            .dragged();
-                        ui.label(
-                            egui::RichText::new("How many folders deep to search for images.")
-                                .weak(),
-                        );
-                        ui.add_space(10.0);
-
-                        ui.label(egui::RichText::new("Preview").strong());
-                        ui.horizontal(|ui| {
-                            ui.label(with_action_key(Action::FullRes));
-                            egui::ComboBox::from_id_salt("binning")
-                                .selected_text(prefs.binning.label())
-                                .show_ui(ui, |ui| {
-                                    for b in BinningPref::ALL {
-                                        ui.selectable_value(&mut prefs.binning, b, b.label());
-                                    }
-                                });
-                        });
-                        let mode = match prefs.binning {
-                            BinningPref::Auto => format!("Bins 2x2, 3x3, … to fit {MAX_SIDE} px."),
-                            BinningPref::Bin1 => "Full resolution.".into(),
-                            // Keeps the line, so the GPU limit doesn't move.
-                            _ => " ".into(),
-                        };
-                        ui.label(egui::RichText::new(mode).weak());
-                        if let Some(limit) = self.loader.max_texture_side() {
-                            let gpu = format!(
-                                "GPU limits to {limit} px; larger images are binned to fit."
-                            );
-                            ui.label(egui::RichText::new(gpu).weak());
-                        }
-                        ui.add_space(10.0);
-
-                        ui.label(egui::RichText::new("Images kept in memory").strong());
-                        let label = format!("{} ahead", prefs.ahead);
-                        dragging |= ui
-                            .add(slider(&mut prefs.ahead, 0..=MAX_PREFETCH, label))
-                            .dragged();
-                        let label = format!("{} behind", prefs.behind);
-                        dragging |= ui
-                            .add(slider(&mut prefs.behind, 0..=MAX_PREFETCH, label))
-                            .dragged();
-                        ui.label(
-                            egui::RichText::new(
-                                "Counted in the direction you browse. Each image takes GPU memory, \
-                     a few hundred MB at full resolution.",
-                            )
-                            .weak(),
-                        );
-                        ui.add_space(10.0);
-
-                        ui.label(egui::RichText::new("Context menu").strong());
-                        ui.horizontal(|ui| {
-                            ui.label("Sort subjects by");
-                            egui::ComboBox::from_id_salt("subject_order")
-                                .selected_text(prefs.subject_order.label())
-                                .show_ui(ui, |ui| {
-                                    for o in SubjectOrder::ALL {
-                                        ui.selectable_value(&mut prefs.subject_order, o, o.label());
-                                    }
-                                });
-                        });
-                        ui.add_space(10.0);
-
-                        ui.label(egui::RichText::new("Toolbar").strong());
-                        ui.checkbox(&mut prefs.show_toolbar, "Show toolbar");
-                        ui.add_space(10.0);
-
-                        ui.label(egui::RichText::new("On start").strong());
-                        ui.checkbox(&mut prefs.show_info, with_action_key(Action::Info));
-                        ui.checkbox(&mut prefs.show_debug, with_action_key(Action::Debug));
-                        ui.checkbox(&mut prefs.actual_size, with_action_key(Action::ZoomActual));
-                        ui.add_space(10.0);
-
-                        ui.label(egui::RichText::new("Apply to every image").strong());
-                        ui.checkbox(
-                            &mut prefs.auto_stretch,
-                            with_action_key(Action::AutoStretch),
-                        );
-                        let boost = match prefs.boost {
-                            0 => "Stretch boost off".to_string(),
-                            n => format!("Stretch boost +{}%", n * BOOST_STEP_PERCENT),
-                        };
-                        let boost = with_key(&style, &boost, &actions::keys(Action::Boost(1)));
-                        dragging |= ui
-                            .add(slider(&mut prefs.boost, 0..=MAX_BOOST, boost))
-                            .dragged();
-                        ui.checkbox(&mut prefs.neutralize, with_action_key(Action::Neutralize));
-                        ui.checkbox(&mut prefs.flash_clip, with_action_key(Action::ClipFlash));
-                        ui.checkbox(&mut prefs.star_view, with_action_key(Action::Stars));
-                        ui.checkbox(&mut prefs.tilt_view, with_action_key(Action::Tilt));
-                        ui.checkbox(&mut prefs.sky_view, with_action_key(Action::Sky));
-                    });
-                ui.add_space(10.0);
-
-                if ui.button(with_key(&style, "Close", "Esc")).clicked() {
-                    close = true;
-                }
-            });
+        let scroll = egui::ScrollArea::vertical()
+            .max_height(ctx.content_rect().height() - SETTINGS_FIXED_HEIGHT)
+            .auto_shrink([false, true])
+            .content_margin(scrollbar_margin);
+        let modal = egui::Modal::new(egui::Id::unique("settings")).frame(frame);
+        let modal = modal.show(ctx, |ui| {
+            ui.set_width(DIALOG_WIDTH + f32::from(scrollbar_margin.right));
+            ui.heading("Settings");
+            ui.add_space(8.0);
+            let dragging = (scroll.show(ui, |ui| settings_form(ui, &mut prefs, gpu_limit))).inner;
+            ui.add_space(10.0);
+            let close = ui.button(with_key(ui.style(), "Close", "Esc")).clicked();
+            (close, dragging)
+        });
+        let (close, dragging) = modal.inner;
         let closing = close || actions::pressed(ctx, Action::Settings) || modal.should_close();
         self.prefs_draft = (dragging && !closing).then_some(prefs);
         if self.prefs_draft.is_none() && prefs != self.prefs {
@@ -201,7 +78,8 @@ impl App {
         let Some(path) = self.confirm_delete.clone() else {
             return;
         };
-        let mut decision = None;
+        let delete_label = egui::RichText::new("Delete (Enter)").color(Color32::WHITE);
+        let delete_button = egui::Button::new(delete_label).fill(Color32::from_rgb(170, 40, 40));
         let modal = egui::Modal::new(egui::Id::unique("confirm_delete")).show(ctx, |ui| {
             ui.set_width(DIALOG_WIDTH);
             ui.heading("Delete file?");
@@ -209,30 +87,27 @@ impl App {
             ui.label(egui::RichText::new(file_name(&path)).strong());
             ui.label("The file will be permanently removed from the drive.");
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let delete =
-                    egui::Button::new(egui::RichText::new("Delete (Enter)").color(Color32::WHITE))
-                        .fill(Color32::from_rgb(170, 40, 40));
-                if ui.add(delete).clicked() {
-                    decision = Some(true);
-                }
-                if ui.button("Cancel (Esc)").clicked() {
-                    decision = Some(false);
-                }
+            let buttons = ui.horizontal(|ui| {
+                let delete = ui.add(delete_button).clicked();
+                (delete, ui.button("Cancel (Esc)").clicked())
             });
+            buttons.inner
         });
-        ctx.input_mut(|i| {
-            if i.consume_key(Modifiers::NONE, Key::Enter) || i.consume_key(Modifiers::NONE, Key::Y)
-            {
-                decision = Some(true);
-            }
-            if i.consume_key(Modifiers::NONE, Key::N) {
-                decision = Some(false);
-            }
+        let (delete, cancel) = modal.inner;
+        let (yes, no) = ctx.input_mut(|i| {
+            let pressed = |i: &mut egui::InputState, key| i.consume_key(Modifiers::NONE, key);
+            let yes = pressed(i, Key::Enter) || pressed(i, Key::Y);
+            (yes, pressed(i, Key::N))
         });
-        if modal.should_close() {
-            decision.get_or_insert(false);
-        }
+        let decision = if no {
+            Some(false)
+        } else if yes || delete {
+            Some(true)
+        } else if cancel || modal.should_close() {
+            Some(false)
+        } else {
+            None
+        };
         if let Some(confirmed) = decision {
             self.confirm_delete = None;
             if confirmed {
@@ -240,4 +115,154 @@ impl App {
             }
         }
     }
+}
+
+/// Returns whether a slider is being dragged; the dialog applies its value on release.
+fn settings_form(ui: &mut egui::Ui, prefs: &mut Preferences, gpu_limit: Option<usize>) -> bool {
+    let mut dragging = folder_settings(ui, prefs);
+    ui.add_space(10.0);
+    preview_settings(ui, prefs, gpu_limit);
+    ui.add_space(10.0);
+    dragging |= memory_settings(ui, prefs);
+    ui.add_space(10.0);
+    heading(ui, "Context menu");
+    ui.horizontal(|ui| {
+        ui.label("Sort subjects by");
+        let order = &mut prefs.subject_order;
+        choice(
+            ui,
+            "subject_order",
+            order,
+            &SubjectOrder::ALL,
+            SubjectOrder::label,
+        );
+    });
+    ui.add_space(10.0);
+    heading(ui, "Toolbar");
+    ui.checkbox(&mut prefs.show_toolbar, "Show toolbar");
+    ui.add_space(10.0);
+    heading(ui, "On start");
+    toggle(ui, &mut prefs.show_info, Action::Info);
+    toggle(ui, &mut prefs.show_debug, Action::Debug);
+    toggle(ui, &mut prefs.actual_size, Action::ZoomActual);
+    ui.add_space(10.0);
+    dragging | every_image_settings(ui, prefs)
+}
+
+fn folder_settings(ui: &mut egui::Ui, prefs: &mut Preferences) -> bool {
+    heading(ui, "Folder");
+    let label = match prefs.subfolder_depth {
+        0 => "Only the opened folder".to_string(),
+        1 => "Subfolders 1 level deep".to_string(),
+        n => format!("Subfolders up to {n} levels deep"),
+    };
+    let dragging = slider(
+        ui,
+        &mut prefs.subfolder_depth,
+        0..=MAX_SUBFOLDER_DEPTH,
+        label,
+    );
+    hint(ui, "How many folders deep to search for images.");
+    dragging
+}
+
+fn preview_settings(ui: &mut egui::Ui, prefs: &mut Preferences, gpu_limit: Option<usize>) {
+    heading(ui, "Preview");
+    ui.horizontal(|ui| {
+        ui.label(actions::label(ui.style(), Action::FullRes));
+        let binning = &mut prefs.binning;
+        choice(
+            ui,
+            "binning",
+            binning,
+            &BinningPref::ALL,
+            BinningPref::label,
+        );
+    });
+    let mode = match prefs.binning {
+        BinningPref::Auto => format!("Bins 2x2, 3x3, … to fit {MAX_SIDE} px."),
+        BinningPref::Bin1 => "Full resolution.".into(),
+        // Keeps the line, so the GPU limit doesn't move.
+        _ => " ".into(),
+    };
+    hint(ui, mode);
+    if let Some(limit) = gpu_limit {
+        hint(
+            ui,
+            format!("GPU limits to {limit} px; larger images are binned to fit."),
+        );
+    }
+}
+
+fn memory_settings(ui: &mut egui::Ui, prefs: &mut Preferences) -> bool {
+    heading(ui, "Images kept in memory");
+    let ahead = format!("{} ahead", prefs.ahead);
+    let mut dragging = slider(ui, &mut prefs.ahead, 0..=MAX_PREFETCH, ahead);
+    let behind = format!("{} behind", prefs.behind);
+    dragging |= slider(ui, &mut prefs.behind, 0..=MAX_PREFETCH, behind);
+    hint(
+        ui,
+        "Counted in the direction you browse. Each image takes GPU memory, a few hundred MB \
+         at full resolution.",
+    );
+    dragging
+}
+
+fn every_image_settings(ui: &mut egui::Ui, prefs: &mut Preferences) -> bool {
+    heading(ui, "Apply to every image");
+    toggle(ui, &mut prefs.auto_stretch, Action::AutoStretch);
+    let boost = match prefs.boost {
+        0 => "Stretch boost off".to_string(),
+        n => format!("Stretch boost +{}%", n * BOOST_STEP_PERCENT),
+    };
+    let boost = with_key(ui.style(), &boost, &actions::keys(Action::Boost(1)));
+    let dragging = slider(ui, &mut prefs.boost, 0..=MAX_BOOST, boost);
+    toggle(ui, &mut prefs.neutralize, Action::Neutralize);
+    toggle(ui, &mut prefs.flash_clip, Action::ClipFlash);
+    toggle(ui, &mut prefs.star_view, Action::Stars);
+    toggle(ui, &mut prefs.tilt_view, Action::Tilt);
+    toggle(ui, &mut prefs.sky_view, Action::Sky);
+    dragging
+}
+
+fn heading(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).strong());
+}
+
+fn hint(ui: &mut egui::Ui, text: impl Into<String>) {
+    ui.label(egui::RichText::new(text).weak());
+}
+
+/// A checkbox labeled with the action's name and key.
+fn toggle(ui: &mut egui::Ui, value: &mut bool, action: Action) {
+    ui.checkbox(value, actions::label(ui.style(), action));
+}
+
+/// Without the value box, which would be a text field. Returns whether it's dragged.
+fn slider<N: egui::emath::Numeric>(
+    ui: &mut egui::Ui,
+    value: &mut N,
+    range: std::ops::RangeInclusive<N>,
+    label: impl Into<egui::WidgetText>,
+) -> bool {
+    let slider = egui::Slider::new(value, range)
+        .show_value(false)
+        .text(label);
+    ui.add(slider).dragged()
+}
+
+fn choice<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    id: &str,
+    value: &mut T,
+    options: &[T],
+    name: fn(T) -> &'static str,
+) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(name(*value))
+        .show_ui(ui, |ui| {
+            for &option in options {
+                ui.selectable_value(value, option, name(option));
+            }
+        });
 }
