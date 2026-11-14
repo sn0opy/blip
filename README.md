@@ -28,6 +28,7 @@ cargo build --release
 | <kbd>Home</kbd> / <kbd>End</kbd> | First / last image |
 | <kbd>Delete</kbd> or <kbd>Backspace</kbd> | Delete file permanently (asks first) |
 | Wheel / drag | Zoom / pan (kept while blinking) |
+| Right-click file | Plate solve, sky links, file actions |
 | Double-click, <kbd>F</kbd> or <kbd>0</kbd> | Reset zoom |
 | <kbd>Z</kbd> | Zoom to 1:1 |
 | <kbd>A</kbd> | Toggle auto stretch for this image |
@@ -42,7 +43,7 @@ cargo build --release
 | <kbd>I</kbd> | Toggle info overlay |
 | <kbd>H</kbd> | Show all header entries |
 | <kbd>D</kbd> | Toggle debug info (timings, stretch, cache, GPU) |
-| <kbd>E</kbd> or <kbd>Ctrl</kbd>+<kbd>S</kbd> | Export as PNG / JPEG (full resolution) |
+| <kbd>E</kbd> or <kbd>Ctrl</kbd>+<kbd>S</kbd> | Export as PNG / JPEG at full resolution |
 | <kbd>O</kbd> or <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open folder |
 | <kbd>F5</kbd> or <kbd>Ctrl</kbd>+<kbd>R</kbd> | Rescan folder |
 | <kbd>Ctrl</kbd>+<kbd>,</kbd> | Open settings |

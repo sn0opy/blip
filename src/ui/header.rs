@@ -1,9 +1,10 @@
 //! The dialog listing every header entry of the current image, sortable by column.
 
-use super::dialogs::{DIALOG_WIDTH, with_key};
+use super::actions::{self, Action, with_key};
+use super::dialogs::DIALOG_WIDTH;
 use super::{App, file_name};
 use blip_core::image::Card;
-use eframe::egui::{self, Key, Modifiers};
+use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use std::cmp::Ordering;
 
@@ -130,8 +131,7 @@ impl App {
             }
         });
         self.header_sort = sort;
-        let toggled = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::H));
-        if close || toggled || modal.should_close() {
+        if close || actions::pressed(ctx, Action::Header) || modal.should_close() {
             self.show_header = false;
         }
     }

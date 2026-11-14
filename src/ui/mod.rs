@@ -1,6 +1,7 @@
 //! The egui application: state, file handling and background jobs. Input handling,
 //! views and dialogs live in the submodules.
 
+mod actions;
 mod dialogs;
 mod draw;
 mod gpu;
@@ -457,7 +458,8 @@ impl App {
         let on = self.auto_stretch.is_on(&cur);
         self.stale = self.cache.remove_entry(&cur).or(self.stale.take());
         let state = if on { "on" } else { "off" };
-        self.set_status(format!("Auto stretch {state} (A to toggle)"), Some(2.0));
+        let key = actions::key_hint(actions::Action::AutoStretch);
+        self.set_status(format!("Auto stretch {state} ({key} to toggle)"), Some(2.0));
         self.request_loads();
     }
 

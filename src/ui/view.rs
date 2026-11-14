@@ -1,3 +1,4 @@
+use super::actions::{self, Action};
 use super::gpu::MemoryBudget;
 use super::loader::Work;
 use super::tree::Row;
@@ -15,25 +16,18 @@ impl App {
     pub(super) fn file_list(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui
-                .button("Open…")
-                .on_hover_text("Open folder (O)")
-                .clicked()
-            {
+            if actions::tooltip(ui.button("Open…"), Action::Open).clicked() {
                 self.pick_folder();
             }
-            if ui
-                .add_enabled(!self.files.is_empty(), egui::Button::new("Export…"))
-                .on_hover_text("Export stretched image as PNG/JPEG at full resolution (E)")
-                .clicked()
-            {
+            let export = ui.add_enabled(!self.files.is_empty(), egui::Button::new("Export…"));
+            if actions::tooltip(export, Action::Export).clicked() {
                 self.export_current(ui.ctx());
             }
             // Pushed right in the same row (not right-to-left), so the panel can't get
             // narrower than all three buttons.
             let gear_side = ui.spacing().interact_size.y;
             ui.add_space((ui.available_width() - gear_side).max(0.0));
-            if gear_button(ui).on_hover_text("Settings (Ctrl+,)").clicked() {
+            if actions::tooltip(gear_button(ui), Action::Settings).clicked() {
                 self.show_settings = true;
             }
         });
@@ -244,9 +238,10 @@ impl App {
             }
         } else if self.files.is_empty() {
             let text = if self.scanner.busy() {
-                "Reading folder…"
+                "Reading folder…".to_string()
             } else {
-                "Open a folder (O) or drop a folder / FITS / XISF file here"
+                let key = actions::key_hint(Action::Open);
+                format!("Open a folder ({key}) or drop a folder / FITS / XISF file here")
             };
             painter.text(
                 rect.center(),
@@ -301,7 +296,7 @@ impl App {
             self.pan += response.drag_delta();
         }
         if response.double_clicked() {
-            self.set_actual_size(false);
+            self.zoom_to_fit();
         }
         if self.zoom <= 1.0 {
             self.pan = Vec2::ZERO;

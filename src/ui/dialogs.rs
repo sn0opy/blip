@@ -1,3 +1,4 @@
+use super::actions::{self, Action, SHORTCUTS, with_key};
 use super::prefs::{BinningPref, MAX_PREFETCH, MAX_SUBFOLDER_DEPTH, SubjectOrder};
 use super::{App, MAX_SIDE, file_name};
 use blip_core::process::{BOOST_STEP_PERCENT, MAX_BOOST};
@@ -6,49 +7,6 @@ use eframe::egui::{self, Color32, Key, Modifiers};
 pub(super) const DIALOG_WIDTH: f32 = 380.0;
 /// The heading, Close button, frame and a gap to the window's edges.
 const SETTINGS_FIXED_HEIGHT: f32 = 140.0;
-
-const SHORTCUTS: &[(&str, &str)] = &[
-    ("↓ → Space J", "Next image"),
-    ("↑ ← K", "Previous image"),
-    ("PgDn / PgUp", "Jump 10 images"),
-    ("Home / End", "First / last image"),
-    ("Delete / Backspace", "Delete file permanently (asks first)"),
-    ("Wheel / drag", "Zoom / pan (kept while blinking)"),
-    ("Right-click file", "Plate solve, sky links, file actions"),
-    ("Double-click, F, 0", "Reset zoom"),
-    ("Z", "Zoom to 1:1"),
-    ("A", "Toggle auto stretch for this image"),
-    ("+ / -", "Stretch harder / softer"),
-    ("C", "Toggle flashing clipped pixels on this image"),
-    ("S", "Toggle star sizes (HFR) on this image"),
-    ("T", "Toggle sensor tilt (corner HFR) on this image"),
-    ("P", "Toggle plate solve annotation on this image"),
-    ("G", "Toggle corner mosaic (aberration inspection)"),
-    ("B", "Toggle binned preview / full resolution"),
-    ("N", "Toggle background neutralization (white balance)"),
-    ("I", "Toggle info overlay"),
-    ("H", "Show all header entries"),
-    ("D", "Toggle debug info (timings, stretch, cache, GPU)"),
-    ("E, Ctrl+S", "Export as PNG / JPEG (full resolution)"),
-    ("O, Ctrl+O", "Open folder"),
-    ("F5, Ctrl+R", "Rescan folder"),
-    ("Ctrl+,", "Settings"),
-    ("?, F1", "This help"),
-];
-
-/// `text (key)` with the key styled as in the shortcuts dialog.
-pub(super) fn with_key(style: &egui::Style, text: &str, key: &str) -> egui::text::LayoutJob {
-    let mut job = egui::text::LayoutJob::default();
-    let font = egui::FontSelection::Default;
-    let align = egui::Align::Center;
-    egui::RichText::new(format!("{text} (")).append_to(&mut job, style, font.clone(), align);
-    egui::RichText::new(key)
-        .monospace()
-        .strong()
-        .append_to(&mut job, style, font.clone(), align);
-    egui::RichText::new(")").append_to(&mut job, style, font, align);
-    job
-}
 
 /// Without the value box, which would be a text field.
 fn slider<'a, N: egui::emath::Numeric>(
@@ -73,22 +31,20 @@ impl App {
                 .num_columns(2)
                 .spacing([24.0, 6.0])
                 .show(ui, |ui| {
-                    for (keys, action) in SHORTCUTS {
-                        ui.label(egui::RichText::new(*keys).monospace().strong());
-                        ui.label(*action);
+                    for shortcut in SHORTCUTS {
+                        let keys = actions::platform_keys(shortcut.keys);
+                        ui.label(egui::RichText::new(keys).monospace().strong());
+                        ui.label(shortcut.description);
                         ui.end_row();
                     }
                 });
             ui.add_space(6.0);
-            ui.label(egui::RichText::new("Press ? or Esc to close").weak());
+            let close = format!("Press {} or Esc to close", actions::key_hint(Action::Help));
+            ui.label(egui::RichText::new(close).weak());
             ui.add_space(6.0);
             ui.label(egui::RichText::new(concat!("blip ", env!("CARGO_PKG_VERSION"))).weak());
         });
-        let toggled = ctx.input_mut(|i| {
-            i.consume_key(Modifiers::NONE, Key::Questionmark)
-                || i.consume_key(Modifiers::NONE, Key::F1)
-        });
-        if toggled || modal.should_close() {
+        if actions::pressed(ctx, Action::Help) || modal.should_close() {
             self.show_help = false;
         }
     }
@@ -110,7 +66,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.set_width(DIALOG_WIDTH + f32::from(scrollbar_margin.right));
                 let style = ui.style().clone();
-                let key = |text: &str, key: &str| with_key(&style, text, key);
+                let with_action_key = |action: Action| actions::label(&style, action);
                 ui.heading("Settings");
                 ui.add_space(8.0);
 
@@ -141,7 +97,7 @@ impl App {
 
                         ui.label(egui::RichText::new("Preview").strong());
                         ui.horizontal(|ui| {
-                            ui.label(key("Binning", "B"));
+                            ui.label(with_action_key(Action::FullRes));
                             egui::ComboBox::from_id_salt("binning")
                                 .selected_text(prefs.binning.label())
                                 .show_ui(ui, |ui| {
@@ -197,35 +153,37 @@ impl App {
                         ui.add_space(10.0);
 
                         ui.label(egui::RichText::new("On start").strong());
-                        ui.checkbox(&mut prefs.show_info, key("Info overlay", "I"));
-                        ui.checkbox(&mut prefs.show_debug, key("Debug info", "D"));
-                        ui.checkbox(&mut prefs.actual_size, key("Zoom 1:1", "Z"));
+                        ui.checkbox(&mut prefs.show_info, with_action_key(Action::Info));
+                        ui.checkbox(&mut prefs.show_debug, with_action_key(Action::Debug));
+                        ui.checkbox(&mut prefs.actual_size, with_action_key(Action::ZoomActual));
                         ui.add_space(10.0);
 
                         ui.label(egui::RichText::new("Apply to every image").strong());
-                        ui.checkbox(&mut prefs.auto_stretch, key("Auto stretch", "A"));
-                        let label = match prefs.boost {
+                        ui.checkbox(
+                            &mut prefs.auto_stretch,
+                            with_action_key(Action::AutoStretch),
+                        );
+                        let boost = match prefs.boost {
                             0 => "Stretch boost off".to_string(),
                             n => format!("Stretch boost +{}%", n * BOOST_STEP_PERCENT),
                         };
-                        let label = key(&label, "+/-");
+                        let boost = with_key(&style, &boost, &actions::keys(Action::Boost(1)));
                         dragging |= ui
-                            .add(slider(&mut prefs.boost, 0..=MAX_BOOST, label))
+                            .add(slider(&mut prefs.boost, 0..=MAX_BOOST, boost))
                             .dragged();
-                        ui.checkbox(&mut prefs.neutralize, key("Background neutralization", "N"));
-                        ui.checkbox(&mut prefs.flash_clip, key("Flashing clipped pixels", "C"));
-                        ui.checkbox(&mut prefs.star_view, key("Star sizes", "S"));
-                        ui.checkbox(&mut prefs.tilt_view, key("Sensor tilt", "T"));
-                        ui.checkbox(&mut prefs.sky_view, key("Plate solve annotation", "P"));
+                        ui.checkbox(&mut prefs.neutralize, with_action_key(Action::Neutralize));
+                        ui.checkbox(&mut prefs.flash_clip, with_action_key(Action::ClipFlash));
+                        ui.checkbox(&mut prefs.star_view, with_action_key(Action::Stars));
+                        ui.checkbox(&mut prefs.tilt_view, with_action_key(Action::Tilt));
+                        ui.checkbox(&mut prefs.sky_view, with_action_key(Action::Sky));
                     });
                 ui.add_space(10.0);
 
-                if ui.button(key("Close", "Esc")).clicked() {
+                if ui.button(with_key(&style, "Close", "Esc")).clicked() {
                     close = true;
                 }
             });
-        let toggled = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Comma));
-        let closing = close || toggled || modal.should_close();
+        let closing = close || actions::pressed(ctx, Action::Settings) || modal.should_close();
         self.prefs_draft = (dragging && !closing).then_some(prefs);
         if self.prefs_draft.is_none() && prefs != self.prefs {
             self.apply_prefs(prefs);
