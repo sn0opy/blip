@@ -1,15 +1,12 @@
 //! Minimal FITS reader: 2D (mono / Bayer) or 3D (RGB planes) images from the primary
 //! HDU or, if that is empty, the first IMAGE extension.
 
-use crate::image::{Bayer, Card, Image, Source, lookup, parse_float, parse_int, read_data};
+use crate::image::{Bayer, Card, Header, Image, Source, lookup, parse_float, parse_int, read_data};
 use rayon::prelude::*;
 
 const BLOCK: usize = 2880;
 const CARD: usize = 80;
 const TRUNCATED_HEADER: &str = "unexpected end of file in header";
-
-/// (keyword, value) cards.
-type Header = Vec<(String, String)>;
 
 /// Decode a FITS file of `len` bytes whose first bytes `head` were already read.
 pub(crate) fn read(file: &mut Source, head: Vec<u8>, len: usize) -> Result<Image, String> {
@@ -38,6 +35,22 @@ pub(crate) fn read(file: &mut Source, head: Vec<u8>, len: usize) -> Result<Image
         decode(&bytes, &layout)?
     };
     Ok(layout.into_image(data, header, cards))
+}
+
+pub(crate) fn read_header(file: &mut Source, mut head: Vec<u8>) -> Result<Header, String> {
+    loop {
+        match parse_header(&head) {
+            Ok((cards, _)) => return Ok(values(&cards)),
+            Err(e) if e == TRUNCATED_HEADER => {
+                let have = head.len();
+                file.read_up_to(&mut head, have * 2)?;
+                if head.len() == have {
+                    return Err(e);
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 pub fn parse(bytes: &[u8]) -> Result<Image, String> {
@@ -784,9 +797,13 @@ mod tests {
             let path = dir.join(format!("blip-test-{}-{name}.fit", std::process::id()));
             std::fs::write(&path, bytes).unwrap();
             let r = crate::image::read_file(&path);
+            let header = crate::image::read_header(&path);
             std::fs::remove_file(&path).unwrap();
             let mem = parse(bytes);
             assert_eq!(r.as_ref().err(), mem.as_ref().err());
+            if let Ok(img) = &r {
+                assert_eq!(header.as_ref(), Ok(&img.header));
+            }
             r.map(|i| i.data)
         };
         let raw = be(&[1u16, 65535], |v| ((v ^ 0x8000) as i16).to_be_bytes());
@@ -802,6 +819,19 @@ mod tests {
                 .unwrap_err()
                 .contains("truncated")
         );
+
+        let header_of = |name: &str, bytes: &[u8]| {
+            let path = dir.join(format!("blip-test-{}-{name}.fit", std::process::id()));
+            std::fs::write(&path, bytes).unwrap();
+            let header = crate::image::read_header(&path);
+            std::fs::remove_file(&path).unwrap();
+            header
+        };
+        assert_eq!(
+            header_of("no-end", &b[..5 * CARD]),
+            Err(TRUNCATED_HEADER.into())
+        );
+        assert_eq!(header_of("header-only", &b[..BLOCK]).unwrap().len(), 6);
 
         // Header longer than the initial 64-block read.
         let comments = vec!["COMMENT padding"; 64 * BLOCK / CARD];

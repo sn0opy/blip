@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 /// read keeps them (and often the start of the data) to a single round trip on network
 /// drives. Longer headers take a second read.
 const HEAD: usize = 64 * 2880;
+const HEADER_HEAD: usize = 4 * 2880;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Bayer {
@@ -85,6 +86,9 @@ impl Bayer {
     }
 }
 
+/// (keyword, value) cards with quotes and comments stripped.
+pub type Header = Vec<(String, String)>;
+
 /// An image with all sample types normalized to u16, so the rest of the pipeline can
 /// work with exact 16-bit histograms and lookup tables.
 pub struct Image {
@@ -99,7 +103,7 @@ pub struct Image {
     /// images list the extension's cards first, followed by the inherited primary header.
     /// XISF images list their FITS keywords, followed by values taken from XISF properties
     /// that have no keyword (see `xisf::PROPERTIES`).
-    pub header: Vec<(String, String)>,
+    pub header: Header,
     /// Every header entry in file order.
     pub cards: Vec<Card>,
 }
@@ -152,6 +156,22 @@ pub fn read_file(path: &Path) -> Result<Image, String> {
     read_file_timed(path).map(|(img, _)| img)
 }
 
+/// FITS files give their primary header only.
+pub fn read_header(path: &Path) -> Result<Header, String> {
+    let file = File::open(path).map_err(|e| e.to_string())?;
+    let mut src = Source {
+        file,
+        io: Duration::ZERO,
+    };
+    let mut head = Vec::new();
+    src.read_up_to(&mut head, HEADER_HEAD)?;
+    if head.starts_with(xisf::SIGNATURE) {
+        xisf::read_header(&mut src, head)
+    } else {
+        fits::read_header(&mut src, head)
+    }
+}
+
 pub struct ReadStats {
     /// File size.
     pub bytes: usize,
@@ -200,6 +220,13 @@ impl Source {
 
     pub(crate) fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
         self.timed(|f| f.read_exact(buf))
+    }
+
+    pub(crate) fn read_up_to(&mut self, head: &mut Vec<u8>, len: usize) -> Result<(), String> {
+        let more = len.saturating_sub(head.len()) as u64;
+        self.timed(|f| f.by_ref().take(more).read_to_end(head))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     pub(crate) fn read_all(&mut self) -> std::io::Result<Vec<u8>> {

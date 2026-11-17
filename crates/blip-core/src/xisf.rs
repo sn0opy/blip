@@ -5,13 +5,11 @@
 //! a crop mask to its masters), checksums and the orientation attribute are ignored.
 
 use crate::fits::parse_value;
-use crate::image::{Bayer, Card, Image, Source, lookup, read_data};
+use crate::image::{Bayer, Card, Header, Image, Source, lookup, read_data};
 use quick_xml::XmlVersion;
 use quick_xml::escape::resolve_predefined_entity;
 use quick_xml::events::{BytesStart, Event};
 use rayon::prelude::*;
-
-type Keywords = Vec<(String, String)>;
 
 pub(crate) const SIGNATURE: &[u8] = b"XISF0100";
 /// Signature, header length and a reserved field precede the XML header.
@@ -304,16 +302,7 @@ impl Layout {
 
 /// Decode an XISF file of `len` bytes whose first bytes `head` were already read.
 pub(crate) fn read(file: &mut Source, mut head: Vec<u8>, len: usize) -> Result<Image, String> {
-    let end = header_end(&head)?;
-    if end > len {
-        return Err("file truncated in XISF header".into());
-    }
-    if head.len() < end {
-        let have = head.len();
-        head.resize(end, 0);
-        file.read_exact(&mut head[have..])
-            .map_err(|e| e.to_string())?;
-    }
+    let end = read_xml(file, &mut head)?;
     let (layout, header, cards) = parse_header(&head[PREFIX..end])?;
     layout.check_size(len)?;
     decode(layout, header, cards, |l, dst| match &l.compression {
@@ -324,6 +313,21 @@ pub(crate) fn read(file: &mut Source, mut head: Vec<u8>, len: usize) -> Result<I
             decompress(&src, c, dst)
         }
     })
+}
+
+pub(crate) fn read_header(file: &mut Source, mut head: Vec<u8>) -> Result<Header, String> {
+    let end = read_xml(file, &mut head)?;
+    Ok(parse_header(&head[PREFIX..end])?.1)
+}
+
+/// Returns where the XML header ends.
+fn read_xml(file: &mut Source, head: &mut Vec<u8>) -> Result<usize, String> {
+    let end = header_end(head)?;
+    file.read_up_to(head, end)?;
+    if head.len() < end {
+        return Err("file truncated in XISF header".into());
+    }
+    Ok(end)
 }
 
 pub fn parse(bytes: &[u8]) -> Result<Image, String> {
@@ -360,7 +364,7 @@ fn header_end(bytes: &[u8]) -> Result<usize, String> {
 
 /// The first top-level image's layout and its FITS keywords, followed by the keywords
 /// derived from [`PROPERTIES`].
-fn parse_header(xml: &[u8]) -> Result<(Layout, Keywords, Vec<Card>), String> {
+fn parse_header(xml: &[u8]) -> Result<(Layout, Header, Vec<Card>), String> {
     let xml = std::str::from_utf8(xml).map_err(|_| "XISF header is not valid UTF-8")?;
     let err = |e: quick_xml::Error| format!("invalid XISF header: {e}");
     let mut reader = quick_xml::Reader::from_str(xml);
@@ -490,7 +494,7 @@ fn attributes(e: &BytesStart) -> Result<Vec<(String, String)>, String> {
 /// block into the buffer it gets.
 fn decode(
     l: Layout,
-    header: Keywords,
+    header: Header,
     cards: Vec<Card>,
     fill: impl FnOnce(&Layout, &mut [u8]) -> Result<(), String>,
 ) -> Result<Image, String> {
@@ -1013,9 +1017,13 @@ mod tests {
             let path = dir.join(format!("blip-test-{}-{name}.xisf", std::process::id()));
             std::fs::write(&path, bytes).unwrap();
             let r = crate::image::read_file(&path);
+            let header = crate::image::read_header(&path);
             std::fs::remove_file(&path).unwrap();
             let mem = parse(bytes);
             assert_eq!(r.as_ref().err(), mem.as_ref().err());
+            if let Ok(img) = &r {
+                assert_eq!(header.as_ref(), Ok(&img.header));
+            }
             r.map(|i| (i.get("FILTER").map(str::to_string), i.data))
         };
         let raw = bytes(&[1u16, 65535], u16::to_le_bytes);
@@ -1043,5 +1051,10 @@ mod tests {
                 .unwrap_err()
                 .contains("truncated")
         );
+        let path = dir.join(format!("blip-test-{}-header-only.xisf", std::process::id()));
+        std::fs::write(&path, &file[..1000]).unwrap();
+        let header = crate::image::read_header(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert!(header.unwrap_err().contains("truncated"));
     }
 }
