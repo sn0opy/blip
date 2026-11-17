@@ -4,7 +4,7 @@
 //! Samples are mapped onto u16 through the image's bounds. Further images (WBPP adds
 //! a crop mask to its masters), checksums and the orientation attribute are ignored.
 
-use crate::fits::parse_value;
+use crate::fits::{parse_value, values};
 use crate::image::{Bayer, Card, Header, Image, Source, lookup, read_data};
 use quick_xml::XmlVersion;
 use quick_xml::escape::resolve_predefined_entity;
@@ -366,18 +366,16 @@ fn header_end(bytes: &[u8]) -> Result<usize, String> {
 /// derived from [`PROPERTIES`].
 fn parse_header(xml: &[u8]) -> Result<(Layout, Header, Vec<Card>), String> {
     let xml = std::str::from_utf8(xml).map_err(|_| "XISF header is not valid UTF-8")?;
-    let err = |e: quick_xml::Error| format!("invalid XISF header: {e}");
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut depth = 0;
     let mut layout = None;
-    let mut keywords = Vec::new();
     let mut cards = Vec::new();
     let mut properties = Vec::new();
     // Keyword of the String property whose text content is being read.
     let mut text_for: Option<&str> = None;
     let mut text = String::new();
     loop {
-        let event = reader.read_event().map_err(err)?;
+        let event = reader.read_event().map_err(invalid_header)?;
         let (e, empty) = match event {
             Event::Start(e) => (e, false),
             Event::Empty(e) => (e, true),
@@ -392,21 +390,8 @@ fn parse_header(xml: &[u8]) -> Result<(Layout, Header, Vec<Card>), String> {
                 }
                 continue;
             }
-            Event::Text(t) if text_for.is_some() => {
-                text.push_str(&t.xml10_content());
-                continue;
-            }
-            Event::CData(t) if text_for.is_some() => {
-                text.push_str(&t.xml10_content());
-                continue;
-            }
-            Event::GeneralRef(r) if text_for.is_some() => {
-                match r.resolve_char_ref().map_err(err)? {
-                    Some(c) => text.push(c),
-                    None => text.push_str(
-                        resolve_predefined_entity(&r.xml10_content()).unwrap_or_default(),
-                    ),
-                }
+            Event::Text(_) | Event::CData(_) | Event::GeneralRef(_) if text_for.is_some() => {
+                push_text(&mut text, &event)?;
                 continue;
             }
             Event::Eof => break,
@@ -421,25 +406,7 @@ fn parse_header(xml: &[u8]) -> Result<(Layout, Header, Vec<Card>), String> {
                 }
             }
             (2, "FITSKeyword") if layout.is_some() => {
-                let a = attributes(&e)?;
-                let name = lookup(&a, "name").unwrap_or_default().trim();
-                let comment = lookup(&a, "comment").unwrap_or_default().trim().to_string();
-                let value = if matches!(name, "COMMENT" | "HISTORY") {
-                    None
-                } else {
-                    let value = parse_value(lookup(&a, "value").unwrap_or_default().as_bytes()).0;
-                    if !name.is_empty() {
-                        keywords.push((name.to_string(), value.clone()));
-                    }
-                    Some(value)
-                };
-                if !name.is_empty() || !comment.is_empty() {
-                    cards.push(Card {
-                        key: name.to_string(),
-                        value,
-                        comment,
-                    });
-                }
+                cards.extend(keyword_card(&attributes(&e)?));
             }
             (2, "Property") if layout.is_some() => {
                 let a = attributes(&e)?;
@@ -470,6 +437,10 @@ fn parse_header(xml: &[u8]) -> Result<(Layout, Header, Vec<Card>), String> {
     }
 
     let layout = layout.ok_or("no image in XISF file")?;
+    let mut keywords: Header = values(&cards)
+        .into_iter()
+        .filter(|(key, _)| !key.is_empty())
+        .collect();
     for (key, value) in properties {
         if lookup(&keywords, &key).is_none() {
             keywords.push((key, value));
@@ -478,13 +449,48 @@ fn parse_header(xml: &[u8]) -> Result<(Layout, Header, Vec<Card>), String> {
     Ok((layout, keywords, cards))
 }
 
+/// The card of a FITSKeyword element, unless it has neither a name nor a comment.
+fn keyword_card(attrs: &[(String, String)]) -> Option<Card> {
+    let name = lookup(attrs, "name").unwrap_or_default().trim();
+    let comment = lookup(attrs, "comment").unwrap_or_default().trim();
+    if name.is_empty() && comment.is_empty() {
+        return None;
+    }
+    let value = (!matches!(name, "COMMENT" | "HISTORY"))
+        .then(|| parse_value(lookup(attrs, "value").unwrap_or_default().as_bytes()).0);
+    Some(Card {
+        key: name.to_string(),
+        value,
+        comment: comment.to_string(),
+    })
+}
+
+fn push_text(text: &mut String, event: &Event) -> Result<(), String> {
+    match event {
+        Event::Text(t) => text.push_str(&t.xml10_content()),
+        Event::CData(t) => text.push_str(&t.xml10_content()),
+        Event::GeneralRef(r) => match r.resolve_char_ref().map_err(invalid_header)? {
+            Some(c) => text.push(c),
+            None => {
+                text.push_str(resolve_predefined_entity(&r.xml10_content()).unwrap_or_default())
+            }
+        },
+        _ => {}
+    }
+    Ok(())
+}
+
+fn invalid_header(e: impl std::fmt::Display) -> String {
+    format!("invalid XISF header: {e}")
+}
+
 fn attributes(e: &BytesStart) -> Result<Vec<(String, String)>, String> {
     e.attributes()
         .map(|a| {
-            let a = a.map_err(|e| format!("invalid XISF header: {e}"))?;
+            let a = a.map_err(invalid_header)?;
             let value = a
                 .normalized_value(XmlVersion::Implicit1_0)
-                .map_err(|e| format!("invalid XISF header: {e}"))?;
+                .map_err(invalid_header)?;
             let key = a.key.local_name().as_ref().to_string();
             Ok((key, value.into_owned()))
         })
@@ -739,6 +745,8 @@ mod tests {
             <FITSKeyword name="OBJECT" value="'M 15 ''core'' '" comment="target"/>
             <FITSKeyword name="EXPTIME" value="120." comment="[s]"/>
             <FITSKeyword name="COMMENT" value="" comment="a comment"/>
+            <FITSKeyword name="" value="5" comment="nameless"/>
+            <FITSKeyword name=" " value="" comment=""/>
             <Property id="Observation:Object:Name" type="String">from property</Property>
             <Property id="Instrument:Filter:Name" type="String">
                 Sloan r&apos; &#x2014; &lt;a&gt;
@@ -768,6 +776,19 @@ mod tests {
                 ("OBJECT", Some("M 15 'core'"), "target"),
                 ("EXPTIME", Some("120."), "[s]"),
                 ("COMMENT", None, "a comment"),
+                ("", Some("5"), "nameless"),
+            ]
+        );
+        let header: Vec<_> = (img.header.iter())
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            header,
+            [
+                ("OBJECT", "M 15 'core'"),
+                ("EXPTIME", "120."),
+                ("FILTER", "Sloan r' \u{2014} <a>"),
+                ("CCD-TEMP", "-10.5"),
             ]
         );
         assert_eq!(img.bayer, None);

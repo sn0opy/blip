@@ -12,10 +12,12 @@ const TRUNCATED_HEADER: &str = "unexpected end of file in header";
 pub(crate) fn read(file: &mut Source, head: Vec<u8>, len: usize) -> Result<Image, String> {
     // Longer headers and extension images take the slow path.
     let slow = |file: &mut Source| parse(&file.read_all().map_err(|e| e.to_string())?);
-    let (cards, data_start) = match parse_header(&head) {
-        Ok(h) => h,
-        Err(e) if e == TRUNCATED_HEADER && head.len() < len => return slow(file),
-        Err(e) => return Err(e),
+    let Some((cards, data_start)) = parse_header(&head)? else {
+        return if head.len() < len {
+            slow(file)
+        } else {
+            Err(TRUNCATED_HEADER.into())
+        };
     };
     let header = values(&cards);
     if header_int(&header, "NAXIS")? == Some(0) {
@@ -39,22 +41,19 @@ pub(crate) fn read(file: &mut Source, head: Vec<u8>, len: usize) -> Result<Image
 
 pub(crate) fn read_header(file: &mut Source, mut head: Vec<u8>) -> Result<Header, String> {
     loop {
-        match parse_header(&head) {
-            Ok((cards, _)) => return Ok(values(&cards)),
-            Err(e) if e == TRUNCATED_HEADER => {
-                let have = head.len();
-                file.read_up_to(&mut head, have * 2)?;
-                if head.len() == have {
-                    return Err(e);
-                }
-            }
-            Err(e) => return Err(e),
+        if let Some((cards, _)) = parse_header(&head)? {
+            return Ok(values(&cards));
+        }
+        let have = head.len();
+        file.read_up_to(&mut head, have * 2)?;
+        if head.len() == have {
+            return Err(TRUNCATED_HEADER.into());
         }
     }
 }
 
 pub fn parse(bytes: &[u8]) -> Result<Image, String> {
-    let (mut cards, mut data_start) = parse_header(bytes)?;
+    let (mut cards, mut data_start) = parse_header(bytes)?.ok_or(TRUNCATED_HEADER)?;
     let mut header = values(&cards);
     let layout = if header_int(&header, "NAXIS")? == Some(0) {
         let (ext, layout, start) = find_image_extension(bytes, data_start)?;
@@ -81,7 +80,7 @@ fn find_image_extension(
         if !rest.starts_with(b"XTENSION") {
             return Err("no image data in file".into());
         }
-        let (cards, len) = parse_cards(rest)?;
+        let (cards, len) = parse_cards(rest)?.ok_or(TRUNCATED_HEADER)?;
         let ext = values(&cards);
         let start = pos + len;
         let kind = lookup(&ext, "XTENSION").unwrap_or_default();
@@ -101,11 +100,7 @@ fn find_image_extension(
 
 /// Size in bytes of the data unit described by a (non-image) extension header.
 fn hdu_data_len(header: &[(String, String)]) -> Result<usize, String> {
-    let req = |k: &str| header_int(header, k)?.ok_or_else(|| format!("missing {k}"));
-    let size = |k: &str| {
-        let n = req(k)?;
-        usize::try_from(n).map_err(|_| format!("invalid {k} = {n}"))
-    };
+    let size = |k: &str| required_size(header, k);
     let naxis = size("NAXIS")?;
     if naxis == 0 {
         return Ok(0);
@@ -116,7 +111,7 @@ fn hdu_data_len(header: &[(String, String)]) -> Result<usize, String> {
             .checked_mul(size(&format!("NAXIS{i}"))?)
             .ok_or("invalid extension size")?;
     }
-    let bpp = (req("BITPIX")?.unsigned_abs() / 8) as usize;
+    let bpp = (required_int(header, "BITPIX")?.unsigned_abs() / 8) as usize;
     let pcount = header_int(header, "PCOUNT")?.unwrap_or(0);
     let gcount = header_int(header, "GCOUNT")?.unwrap_or(1);
     usize::try_from(pcount)
@@ -128,15 +123,16 @@ fn hdu_data_len(header: &[(String, String)]) -> Result<usize, String> {
         .ok_or_else(|| "invalid extension size".into())
 }
 
-fn parse_header(bytes: &[u8]) -> Result<(Vec<Card>, usize), String> {
+fn parse_header(bytes: &[u8]) -> Result<Option<(Vec<Card>, usize)>, String> {
     if !bytes.starts_with(b"SIMPLE  =") {
         return Err("not a FITS file".into());
     }
     parse_cards(bytes)
 }
 
-/// Parse header cards up to END. Returns the cards and the block-aligned header length.
-fn parse_cards(bytes: &[u8]) -> Result<(Vec<Card>, usize), String> {
+/// Parse header cards up to END. Returns the cards and the block-aligned header length,
+/// or `None` if `bytes` ends before END.
+fn parse_cards(bytes: &[u8]) -> Result<Option<(Vec<Card>, usize)>, String> {
     let mut cards = Vec::new();
     for (i, card) in bytes.as_chunks::<CARD>().0.iter().enumerate() {
         let key = std::str::from_utf8(&card[..8])
@@ -145,7 +141,7 @@ fn parse_cards(bytes: &[u8]) -> Result<(Vec<Card>, usize), String> {
             .ok_or("invalid header keyword")?
             .trim_end();
         if key == "END" {
-            return Ok((cards, ((i + 1) * CARD).div_ceil(BLOCK) * BLOCK));
+            return Ok(Some((cards, ((i + 1) * CARD).div_ceil(BLOCK) * BLOCK)));
         }
         let (value, comment) = if &card[8..10] == b"= " {
             let (value, comment) = parse_value(&card[10..]);
@@ -161,7 +157,7 @@ fn parse_cards(bytes: &[u8]) -> Result<(Vec<Card>, usize), String> {
             });
         }
     }
-    Err(TRUNCATED_HEADER.into())
+    Ok(None)
 }
 
 /// Value (without quotes) and comment of a card's value field. Works on bytes so stray
@@ -196,7 +192,7 @@ pub(crate) fn parse_value(raw: &[u8]) -> (String, String) {
     (value, comment)
 }
 
-fn values(cards: &[Card]) -> Header {
+pub(crate) fn values(cards: &[Card]) -> Header {
     cards
         .iter()
         .filter_map(|c| Some((c.key.clone(), c.value.clone()?)))
@@ -213,15 +209,30 @@ fn text(bytes: &[u8]) -> String {
 
 /// `Ok(None)` if the key is absent, `Err` if present but not an integer.
 fn header_int(header: &[(String, String)], key: &str) -> Result<Option<i64>, String> {
-    lookup(header, key)
-        .map(|v| parse_int(v).ok_or_else(|| format!("invalid {key} = {v:?}")))
-        .transpose()
+    header_number(header, key, parse_int)
 }
 
 fn header_float(header: &[(String, String)], key: &str) -> Result<Option<f64>, String> {
+    header_number(header, key, parse_float)
+}
+
+fn header_number<T>(
+    header: &[(String, String)],
+    key: &str,
+    parse: impl Fn(&str) -> Option<T>,
+) -> Result<Option<T>, String> {
     lookup(header, key)
-        .map(|v| parse_float(v).ok_or_else(|| format!("invalid {key} = {v:?}")))
+        .map(|v| parse(v).ok_or_else(|| format!("invalid {key} = {v:?}")))
         .transpose()
+}
+
+fn required_int(header: &[(String, String)], key: &str) -> Result<i64, String> {
+    header_int(header, key)?.ok_or_else(|| format!("missing {key}"))
+}
+
+fn required_size(header: &[(String, String)], key: &str) -> Result<usize, String> {
+    let n = required_int(header, key)?;
+    usize::try_from(n).map_err(|_| format!("invalid {key} = {n}"))
 }
 
 struct Layout {
@@ -241,14 +252,8 @@ struct Layout {
 
 impl Layout {
     fn new(header: &[(String, String)]) -> Result<Self, String> {
-        let int = |k: &str| header_int(header, k);
-        let req = |k: &str| int(k)?.ok_or_else(|| format!("missing {k}"));
-        let size = |k: &str| {
-            let n = req(k)?;
-            usize::try_from(n).map_err(|_| format!("invalid {k} = {n}"))
-        };
-
-        let naxis = req("NAXIS")?;
+        let size = |k: &str| required_size(header, k);
+        let naxis = required_int(header, "NAXIS")?;
         if !(2..=3).contains(&naxis) {
             return Err(format!("unsupported NAXIS = {naxis}"));
         }
@@ -263,7 +268,7 @@ impl Layout {
             },
             _ => 1,
         };
-        let bitpix = req("BITPIX")?;
+        let bitpix = required_int(header, "BITPIX")?;
         if ![8, 16, 32, 64, -32, -64].contains(&bitpix) {
             return Err(format!("unsupported BITPIX = {bitpix}"));
         }
@@ -283,7 +288,11 @@ impl Layout {
             bitpix,
             bzero: header_float(header, "BZERO")?.unwrap_or(0.0),
             bscale: header_float(header, "BSCALE")?.unwrap_or(1.0),
-            blank: if bitpix > 0 { int("BLANK")? } else { None },
+            blank: if bitpix > 0 {
+                header_int(header, "BLANK")?
+            } else {
+                None
+            },
             bayer,
             samples,
             data_len,
@@ -492,7 +501,7 @@ mod tests {
             ],
             &[],
         );
-        let (cards, start) = parse_header(&bytes).unwrap();
+        let (cards, start) = parse_header(&bytes).unwrap().unwrap();
         assert_eq!(start, BLOCK);
         let h = values(&cards);
         assert_eq!(lookup(&h, "OBJECT"), Some("M 15 'core'"));
@@ -524,7 +533,7 @@ mod tests {
         let mut cards = vec!["SIMPLE  =                    T"];
         cards.extend(many.iter().map(String::as_str));
         let mut bytes = fits_bytes(&cards, &[]);
-        let (cards, start) = parse_header(&bytes).unwrap();
+        let (cards, start) = parse_header(&bytes).unwrap().unwrap();
         let h = values(&cards);
         assert_eq!(start, 2 * BLOCK);
         assert_eq!(h.len(), 41);
@@ -532,9 +541,10 @@ mod tests {
         // Cards after END are ignored.
         let end = 41 * CARD;
         bytes[end + CARD..end + 2 * CARD].copy_from_slice(&[b'X'; CARD]);
-        assert_eq!(parse_header(&bytes).unwrap().0.len(), 41);
+        assert_eq!(parse_header(&bytes).unwrap().unwrap().0.len(), 41);
         // Missing END.
-        assert_eq!(parse_header(&bytes[..end]).unwrap_err(), TRUNCATED_HEADER);
+        assert_eq!(parse_header(&bytes[..end]), Ok(None));
+        assert_eq!(parse_err(&bytes[..end]), TRUNCATED_HEADER);
         assert!(parse_header(b"NOT FITS").is_err());
     }
 
@@ -553,7 +563,7 @@ mod tests {
             assert_eq!(bytes[pos], b'x');
             bytes[pos] = if pos < 2 * CARD { 0xB0 } else { 0xFC };
         }
-        let (cards, _) = parse_header(&bytes).unwrap();
+        let (cards, _) = parse_header(&bytes).unwrap().unwrap();
         let h = values(&cards);
         assert_eq!(lookup(&h, "CCD-TEMP"), Some("-9.8"));
         assert_eq!(cards[1].comment, "temperature in °C");
@@ -818,6 +828,10 @@ mod tests {
             check("trunc", &b[..BLOCK + 3])
                 .unwrap_err()
                 .contains("truncated")
+        );
+        assert_eq!(
+            check("noend", &b[..5 * CARD]).unwrap_err(),
+            TRUNCATED_HEADER
         );
 
         let header_of = |name: &str, bytes: &[u8]| {

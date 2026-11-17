@@ -19,7 +19,7 @@ pub fn export(src: &Path, dst: &Path, params: process::StretchParams) -> Result<
 
 /// Encode packed RGB8 pixels to `dst` as JPEG (`.jpg`/`.jpeg`) or PNG (any other
 /// extension is replaced by `.png`). Returns the path actually written.
-pub fn write_image(dst: &Path, rgb: &[u8], width: usize, height: usize) -> Result<PathBuf, String> {
+fn write_image(dst: &Path, rgb: &[u8], width: usize, height: usize) -> Result<PathBuf, String> {
     let ext = dst
         .extension()
         .and_then(|e| e.to_str())
@@ -56,7 +56,7 @@ pub fn encode(rgb: &[u8], width: usize, height: usize, jpeg: bool) -> Result<Vec
 /// Baseline 4:4:4 JPEG. The encoder is single-threaded, so horizontal strips are
 /// encoded in parallel and joined with restart markers: the DC prediction resets at
 /// each marker, which makes the strips' entropy-coded data independent.
-pub fn encode_jpeg(rgb: &[u8], width: usize, height: usize) -> Result<Vec<u8>, String> {
+fn encode_jpeg(rgb: &[u8], width: usize, height: usize) -> Result<Vec<u8>, String> {
     let (Ok(w), Ok(h)) = (u16::try_from(width), u16::try_from(height)) else {
         return Err("image too large for JPEG (max 65535 px per side)".into());
     };
@@ -91,18 +91,19 @@ pub fn encode_jpeg(rgb: &[u8], width: usize, height: usize) -> Result<Vec<u8>, S
 
     // Headers of the first strip with the full height and a restart interval, then
     // every strip's scan data followed by RST0..7 (cycling), then EOI.
-    let (sof, sos, _) = jpeg_layout(&strips[0])?;
+    let layouts = strips
+        .iter()
+        .map(|s| jpeg_layout(s))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (first, (sof, sos, data)) = (&strips[0], layouts[0]);
     let mut out = Vec::with_capacity(strips.iter().map(Vec::len).sum::<usize>() + 64);
-    out.extend_from_slice(&strips[0][..sos]);
+    out.extend_from_slice(&first[..sos]);
     out[sof + 5..sof + 7].copy_from_slice(&h.to_be_bytes());
     let interval = (mcu_cols * strip_mcu_rows) as u16;
     out.extend_from_slice(&[0xFF, 0xDD, 0, 4]);
     out.extend_from_slice(&interval.to_be_bytes());
-    for (i, strip) in strips.iter().enumerate() {
-        let (_, sos, data) = jpeg_layout(strip)?;
-        if i == 0 {
-            out.extend_from_slice(&strip[sos..data]);
-        }
+    out.extend_from_slice(&first[sos..data]);
+    for (i, (strip, &(_, _, data))) in strips.iter().zip(&layouts).enumerate() {
         out.extend_from_slice(&strip[data..strip.len() - 2]);
         if i + 1 < strips.len() {
             out.extend_from_slice(&[0xFF, 0xD0 + (i % 8) as u8]);
