@@ -1,5 +1,6 @@
 //! Listing the opened folder in the background, which can take seconds on network shares.
 
+use super::rejects::is_rejected_folder;
 use eframe::egui;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ pub fn is_image(path: &Path) -> bool {
 }
 
 /// Images of the subfolders come first, folder by folder, then the folder's own.
-/// Unreadable subfolders are skipped.
+/// Unreadable subfolders and the rejected folder are skipped.
 pub fn list_images(dir: &Path, subfolder_depth: usize) -> io::Result<Vec<PathBuf>> {
     let mut subfolders = Vec::new();
     let mut images = Vec::new();
@@ -24,7 +25,7 @@ pub fn list_images(dir: &Path, subfolder_depth: usize) -> io::Result<Vec<PathBuf
     {
         if is_image(&path) {
             images.push(path);
-        } else if subfolder_depth > 0 && path.is_dir() {
+        } else if subfolder_depth > 0 && path.is_dir() && !is_rejected_folder(&path) {
             subfolders.push(path);
         }
     }

@@ -2,6 +2,7 @@
 //! AstroBin, Aladin and SIMBAD, and file actions.
 
 use super::App;
+use super::dialogs::Deletion;
 use super::prefs::SubjectOrder;
 use blip_core::astrobin::{self, FieldOfView, Search};
 use blip_core::dso::{self, Dso};
@@ -23,6 +24,7 @@ pub(super) enum MenuAction {
     Status(String),
     Export(PathBuf),
     Header(PathBuf),
+    ToggleRejected(PathBuf),
     Delete(PathBuf),
 }
 
@@ -47,7 +49,8 @@ impl App {
                     self.open_header();
                 }
             }
-            Some(MenuAction::Delete(path)) => self.confirm_delete = Some(path),
+            Some(MenuAction::ToggleRejected(path)) => self.toggle_rejected(&path),
+            Some(MenuAction::Delete(path)) => self.confirm_delete = Some(Deletion::File(path)),
             None => {}
         }
     }
@@ -137,6 +140,14 @@ impl App {
         }
 
         ui.separator();
+        let reject = if self.list.is_rejected(path) {
+            "Unreject"
+        } else {
+            "Reject"
+        };
+        if ui.button(reject).clicked() {
+            action = Some(MenuAction::ToggleRejected(path.to_path_buf()));
+        }
         if ui.button("Delete…").clicked() {
             action = Some(MenuAction::Delete(path.to_path_buf()));
         }

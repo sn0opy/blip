@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 const FLASH_PERIOD: f64 = 0.8;
 /// Space between the mosaic panels, in points.
 const MOSAIC_GAP: f32 = 3.0;
+const REJECTED_BORDER: f32 = 3.0;
 const FILTER_CORNER_RADIUS: u8 = 3;
 const FILTER_TIP: &str =
     "Images whose path contains all words.\n-word leaves out, \"two words\" keeps the space.";
@@ -47,6 +48,7 @@ impl App {
             self.grouping_button(ui, side);
         });
         ui.separator();
+        self.rejected_panel(ui);
 
         let scroll_to_selected = self.list.take_scroll_to_selected();
         let scroll_rows = self.list.take_scroll_rows();
@@ -214,6 +216,10 @@ impl App {
         let (mut atoms, selected) = match row {
             Row::Folder { path, .. } => {
                 let mut atoms = egui::Atoms::new((file_name(path), egui::Atom::grow()));
+                let rejected = self.list.rejected_in(path);
+                if rejected > 0 {
+                    atoms.push_right(egui::RichText::new(rejected.to_string()).color(draw::RED));
+                }
                 atoms.push_left(disclosure_triangle(
                     triangle_side,
                     !self.list.tree().is_collapsed(path),
@@ -223,8 +229,10 @@ impl App {
             Row::Image { index, .. } => {
                 let path = &self.list.files()[*index];
                 let mut text = egui::RichText::new(file_name(path));
-                if self.errors.contains_key(path) {
-                    text = text.color(Color32::from_rgb(220, 90, 90));
+                if self.list.is_rejected(path) {
+                    text = text.color(draw::RED).strikethrough();
+                } else if self.errors.contains_key(path) {
+                    text = text.color(draw::RED);
                 }
                 (
                     egui::Atoms::new((text, egui::Atom::grow())),
@@ -390,6 +398,10 @@ impl App {
                 );
                 ui.put(spinner_rect, egui::Spinner::new().size(22.0));
             }
+        }
+        if current.as_ref().is_some_and(|p| self.list.is_rejected(p)) {
+            let border = egui::Stroke::new(REJECTED_BORDER, draw::RED);
+            painter.rect_stroke(rect, 0.0, border, egui::StrokeKind::Inside);
         }
         self.status_line(ui, &painter, bottom_left);
     }

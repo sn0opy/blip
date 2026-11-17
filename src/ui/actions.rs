@@ -2,6 +2,7 @@
 //! help, settings, tooltips and status messages all read their key hints from here.
 
 use super::App;
+use super::dialogs::Deletion;
 use eframe::egui::{self, Key, Modifiers};
 use std::borrow::Cow;
 
@@ -11,6 +12,8 @@ pub enum Action {
     First,
     Last,
     Delete,
+    Reject,
+    HandleRejected,
     ZoomFit,
     ZoomActual,
     AutoStretch,
@@ -42,6 +45,14 @@ pub struct Binding {
 const fn key(key: Key, action: Action) -> Binding {
     Binding {
         modifiers: Modifiers::NONE,
+        key,
+        action,
+    }
+}
+
+const fn shift(key: Key, action: Action) -> Binding {
+    Binding {
+        modifiers: Modifiers::SHIFT,
         key,
         action,
     }
@@ -124,6 +135,13 @@ pub const SHORTCUTS: &[Shortcut] = &[
         &[key(Key::Delete, Delete), key(Key::Backspace, Delete)],
     )
     .named("Delete file"),
+    row("X", "Reject or unreject file", &[key(Key::X, Reject)]).named("Reject file"),
+    row(
+        "Shift+X",
+        "Move, trash or delete the rejected files (see Settings)",
+        &[shift(Key::X, HandleRejected)],
+    )
+    .named("Handle rejected files"),
     row("Wheel / drag", "Zoom / pan (kept while blinking)", &[]),
     row(
         "Right-click file",
@@ -328,8 +346,8 @@ pub fn pressed(ctx: &egui::Context, action: Action) -> bool {
     !consume_pressed(ctx, |b| b.action == action).is_empty()
 }
 
-/// The actions of this frame's key presses that `wanted` accepts, once each and in
-/// table order. Their keys are consumed.
+/// The actions of this frame's key presses that `wanted` accepts, once each. Their keys
+/// are consumed.
 fn consume_pressed(ctx: &egui::Context, wanted: impl Fn(&Binding) -> bool) -> Vec<Action> {
     ctx.input_mut(|i| {
         let mut actions = Vec::new();
@@ -338,7 +356,11 @@ fn consume_pressed(ctx: &egui::Context, wanted: impl Fn(&Binding) -> bool) -> Ve
         if !any_key {
             return actions;
         }
-        for b in bindings().filter(|b| wanted(b)) {
+        // A key without modifiers also matches with Shift held, so those go last.
+        let (plain, modified): (Vec<_>, Vec<_>) = bindings()
+            .filter(|b| wanted(b))
+            .partition(|b| b.modifiers.is_none());
+        for b in modified.into_iter().chain(plain) {
             if i.consume_key(b.modifiers, b.key) && !actions.contains(&b.action) {
                 actions.push(b.action);
             }
@@ -373,7 +395,13 @@ impl App {
             Step(delta) => self.step(delta),
             First => self.select(0),
             Last => self.select(usize::MAX),
-            Delete => self.confirm_delete = self.current().cloned(),
+            Delete => self.confirm_delete = self.current().cloned().map(Deletion::File),
+            Reject => {
+                if let Some(path) = self.current().cloned() {
+                    self.toggle_rejected(&path);
+                }
+            }
+            HandleRejected => self.handle_rejected(),
             // Zoom doesn't apply to the mosaic, as on the toolbar.
             ZoomFit | ZoomActual if self.mosaic => {}
             ZoomFit => self.zoom_to_fit(),
@@ -462,9 +490,34 @@ mod tests {
     }
 
     #[test]
+    fn shift_x_handles_the_rejected_files_instead_of_rejecting() {
+        let ctx = egui::Context::default();
+        let press = |modifiers| egui::Event::Key {
+            key: Key::X,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let pressed = |modifiers| {
+            let events = vec![press(modifiers)];
+            ctx.begin_pass(egui::RawInput {
+                events,
+                ..Default::default()
+            });
+            let actions = consume_pressed(&ctx, |_| true);
+            ctx.end_pass().textures_delta.clear();
+            actions
+        };
+        assert_eq!(pressed(Modifiers::SHIFT), [HandleRejected]);
+        assert_eq!(pressed(Modifiers::NONE), [Reject]);
+    }
+
+    #[test]
     fn hints_name_the_first_key() {
         assert_eq!(key_hint(Step(1)), "→");
         assert_eq!(key_hint(Delete), "Del");
+        assert_eq!(key_hint(HandleRejected), "Shift+X");
         let command = if IS_MAC { "Cmd" } else { "Ctrl" };
         assert_eq!(key_hint(Settings), format!("{command}+,"));
         assert_eq!(keys(Export), format!("E, {command}+S"));

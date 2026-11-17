@@ -1,12 +1,21 @@
 use super::actions::{self, Action, SHORTCUTS, with_key};
-use super::prefs::{BinningPref, MAX_PREFETCH, MAX_SUBFOLDER_DEPTH, Preferences, SubjectOrder};
-use super::{App, MAX_SIDE, file_name};
+use super::prefs::{
+    BinningPref, MAX_PREFETCH, MAX_SUBFOLDER_DEPTH, Preferences, RejectHandling, SubjectOrder,
+};
+use super::rejects::REJECTED_FOLDER;
+use super::{App, MAX_SIDE, file_count, file_name};
 use blip_core::process::{BOOST_STEP_PERCENT, MAX_BOOST};
 use eframe::egui::{self, Color32, Key, Modifiers};
+use std::path::PathBuf;
 
 pub(super) const DIALOG_WIDTH: f32 = 380.0;
 /// The heading, Close button, frame and a gap to the window's edges.
 const SETTINGS_FIXED_HEIGHT: f32 = 140.0;
+
+pub(super) enum Deletion {
+    File(PathBuf),
+    Rejected,
+}
 
 impl App {
     pub(super) fn help_dialog(&mut self, ctx: &egui::Context) {
@@ -75,17 +84,29 @@ impl App {
     }
 
     pub(super) fn delete_dialog(&mut self, ctx: &egui::Context) {
-        let Some(path) = self.confirm_delete.clone() else {
+        let Some(deletion) = &self.confirm_delete else {
             return;
+        };
+        let (heading, what, consequence) = match deletion {
+            Deletion::File(path) => (
+                "Delete file?",
+                file_name(path),
+                "The file will be permanently removed from the drive.",
+            ),
+            Deletion::Rejected => (
+                "Delete rejected files?",
+                file_count(self.list.rejected_count()),
+                "They will be permanently removed from the drive.",
+            ),
         };
         let delete_label = egui::RichText::new("Delete (Enter)").color(Color32::WHITE);
         let delete_button = egui::Button::new(delete_label).fill(Color32::from_rgb(170, 40, 40));
         let modal = egui::Modal::new(egui::Id::unique("confirm_delete")).show(ctx, |ui| {
             ui.set_width(DIALOG_WIDTH);
-            ui.heading("Delete file?");
+            ui.heading(heading);
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(file_name(&path)).strong());
-            ui.label("The file will be permanently removed from the drive.");
+            ui.label(egui::RichText::new(what).strong());
+            ui.label(consequence);
             ui.add_space(8.0);
             let buttons = ui.horizontal(|ui| {
                 let delete = ui.add(delete_button).clicked();
@@ -109,9 +130,11 @@ impl App {
             None
         };
         if let Some(confirmed) = decision {
-            self.confirm_delete = None;
-            if confirmed {
-                self.delete(&path);
+            let deletion = self.confirm_delete.take();
+            match deletion.filter(|_| confirmed) {
+                Some(Deletion::File(path)) => self.delete(&path),
+                Some(Deletion::Rejected) => self.dispose_rejected(RejectHandling::Delete),
+                None => {}
             }
         }
     }
@@ -120,6 +143,8 @@ impl App {
 /// Returns whether a slider is being dragged; the dialog applies its value on release.
 fn settings_form(ui: &mut egui::Ui, prefs: &mut Preferences, gpu_limit: Option<usize>) -> bool {
     let mut dragging = folder_settings(ui, prefs);
+    ui.add_space(10.0);
+    rejected_settings(ui, prefs);
     ui.add_space(10.0);
     preview_settings(ui, prefs, gpu_limit);
     ui.add_space(10.0);
@@ -174,6 +199,31 @@ fn folder_settings(ui: &mut egui::Ui, prefs: &mut Preferences) -> bool {
     );
     ui.add_enabled(prefs.header_search, scan);
     dragging
+}
+
+fn rejected_settings(ui: &mut egui::Ui, prefs: &mut Preferences) {
+    heading(ui, "Rejected files");
+    ui.horizontal(|ui| {
+        ui.label(actions::label(ui.style(), Action::HandleRejected));
+        let handling = &mut prefs.reject_handling;
+        choice(
+            ui,
+            "reject_handling",
+            handling,
+            &RejectHandling::ALL,
+            RejectHandling::label,
+        );
+    });
+    hint(
+        ui,
+        match prefs.reject_handling {
+            RejectHandling::MoveToFolder => {
+                format!("Into {REJECTED_FOLDER}/ in the opened folder, keeping subfolders.")
+            }
+            RejectHandling::MoveToTrash => "They can be restored from the trash.".into(),
+            RejectHandling::Delete => "Asks first. This can't be undone.".into(),
+        },
+    );
 }
 
 fn preview_settings(ui: &mut egui::Ui, prefs: &mut Preferences, gpu_limit: Option<usize>) {

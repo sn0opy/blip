@@ -22,12 +22,19 @@ egui_extras = { version = "0.37.0", default-features = false }
 rayon.workspace = true
 rfd = "0.17.2"
 ron = "0.12.2"
+trash = "5.4.0"
 
 # With eframe's default features off, Linux needs its windowing backends enabled explicitly.
 [target.'cfg(target_os = "linux")'.dependencies]
 eframe = { version = "0.37.0", default-features = false, features = [
     "wayland",
     "x11",
+] }
+# Moves rejected files to the trash through the portal inside the Flatpak sandbox (src/ui/trash.rs).
+# Same version and runtime accesskit uses.
+zbus = { version = "5.19.0", default-features = false, features = [
+    "async-io",
+    "blocking-api",
 ] }
 
 # Skips repaints while the window is dragged (src/windows.rs).

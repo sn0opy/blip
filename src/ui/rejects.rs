@@ -1,0 +1,206 @@
+//! Rejecting images while blinking, and moving, trashing or deleting the rejected ones.
+
+use super::actions::{self, Action};
+use super::dialogs::Deletion;
+use super::prefs::RejectHandling;
+use super::{App, draw, file_count, file_name, trash};
+use eframe::egui::{self, Vec2};
+use std::ffi::OsString;
+use std::io;
+use std::path::{Path, PathBuf};
+
+pub const REJECTED_FOLDER: &str = "_rejected";
+
+impl App {
+    pub(super) fn toggle_rejected(&mut self, path: &Path) {
+        let verb = if self.list.toggle_rejected(path) {
+            "Rejected"
+        } else {
+            "Unrejected"
+        };
+        self.set_status(format!("{verb} {}", file_name(path)), Some(2.5));
+    }
+
+    pub(super) fn handle_rejected(&mut self) {
+        if self.list.rejected_count() == 0 {
+            return;
+        }
+        match self.prefs.reject_handling {
+            RejectHandling::Delete => self.confirm_delete = Some(Deletion::Rejected),
+            handling => self.dispose_rejected(handling),
+        }
+    }
+
+    pub(super) fn dispose_rejected(&mut self, handling: RejectHandling) {
+        let Some(root) = self.list.dir().map(Path::to_path_buf) else {
+            return;
+        };
+        let files = self.list.rejected();
+        let results = match handling {
+            RejectHandling::MoveToFolder => {
+                each_file(&files, |f| move_to_rejected_folder(&root, f))
+            }
+            RejectHandling::MoveToTrash => trash::move_to_trash(&files),
+            RejectHandling::Delete => each_file(&files, |f| std::fs::remove_file(f)),
+        };
+        let mut done = Vec::new();
+        let mut errors = Vec::new();
+        for (file, result) in files.into_iter().zip(results) {
+            match result {
+                Ok(()) => done.push(file),
+                Err(e) => errors.push(e),
+            }
+        }
+        self.forget(&done);
+        let message = disposed_message(handling, done.len());
+        match errors.first() {
+            None => self.set_status(message, Some(2.5)),
+            Some(e) => {
+                let failed = format!("{message}, {} failed: {e}", errors.len());
+                self.set_status(failed, Some(8.0));
+            }
+        }
+        self.request_loads();
+    }
+
+    /// Below the file list while any file is rejected.
+    pub(super) fn rejected_panel(&mut self, ui: &mut egui::Ui) {
+        let count = self.list.rejected_count();
+        if count == 0 {
+            return;
+        }
+        let frame = egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 6));
+        egui::Panel::bottom("rejected").frame(frame).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(draw::RED, format!("{count} rejected"));
+                let right = egui::Layout::right_to_left(egui::Align::Center);
+                ui.with_layout(right, |ui| {
+                    let clear = ui.button("Clear").on_hover_text("Unreject all files");
+                    if clear.clicked() {
+                        self.list.clear_rejected();
+                    }
+                });
+            });
+            let label = match self.prefs.reject_handling {
+                RejectHandling::MoveToFolder => format!("Move to {REJECTED_FOLDER}/"),
+                RejectHandling::MoveToTrash => "Move to trash".into(),
+                RejectHandling::Delete => "Delete…".into(),
+            };
+            let centered = (egui::Atom::grow(), label, egui::Atom::grow());
+            let button = egui::Button::new(centered).min_size(Vec2::new(ui.available_width(), 0.0));
+            if actions::tooltip(ui.add(button), Action::HandleRejected).clicked() {
+                self.handle_rejected();
+            }
+        });
+    }
+}
+
+fn disposed_message(handling: RejectHandling, done: usize) -> String {
+    let done = file_count(done);
+    match handling {
+        RejectHandling::MoveToFolder => format!("Moved {done} to {REJECTED_FOLDER}/"),
+        RejectHandling::MoveToTrash => format!("Moved {done} to the trash"),
+        RejectHandling::Delete => format!("Deleted {done}"),
+    }
+}
+
+fn each_file(
+    files: &[PathBuf],
+    dispose: impl Fn(&Path) -> io::Result<()>,
+) -> Vec<Result<(), String>> {
+    (files.iter())
+        .map(|f| dispose(f).map_err(|e| e.to_string()))
+        .collect()
+}
+
+pub fn is_rejected_folder(path: &Path) -> bool {
+    path.file_name() == Some(REJECTED_FOLDER.as_ref())
+}
+
+/// Into the rejected folder in `root`, in the same subfolders. Never replaces a file.
+fn move_to_rejected_folder(root: &Path, file: &Path) -> io::Result<()> {
+    let relative = file.strip_prefix(root).map_err(io::Error::other)?;
+    let target = unused_path(root.join(REJECTED_FOLDER).join(relative));
+    if let Some(folder) = target.parent() {
+        std::fs::create_dir_all(folder)?;
+    }
+    std::fs::rename(file, target)
+}
+
+/// `path`, or `name (2).ext`, `name (3).ext`, … if it's taken.
+fn unused_path(path: PathBuf) -> PathBuf {
+    let taken = |p: &Path| p.symlink_metadata().is_ok();
+    if !taken(&path) {
+        return path;
+    }
+    let stem = path.file_stem().unwrap_or_default().to_owned();
+    let extension = path.extension().map(OsString::from);
+    let mut n = 2;
+    loop {
+        let mut name = stem.clone();
+        name.push(format!(" ({n})"));
+        if let Some(extension) = &extension {
+            name.push(".");
+            name.push(extension);
+        }
+        let numbered = path.with_file_name(name);
+        if !taken(&numbered) {
+            return numbered;
+        }
+        n += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::scan::list_images;
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("blip-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn file(&self, relative: &str) -> PathBuf {
+            let path = self.0.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, relative).unwrap();
+            path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn rejected_files_keep_their_subfolders_and_never_replace_one() {
+        let root = TempDir::new("reject");
+        let light = root.file("night 1/light.fits");
+        root.file("_rejected/night 1/light.fits");
+        root.file("_rejected/night 1/light (2).fits");
+
+        move_to_rejected_folder(&root.0, &light).unwrap();
+        assert!(!light.exists());
+        let moved = root.0.join("_rejected/night 1/light (3).fits");
+        assert_eq!(
+            std::fs::read_to_string(moved).unwrap(),
+            "night 1/light.fits"
+        );
+        assert!(list_images(&root.0, 2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn numbers_names_without_an_extension() {
+        let root = TempDir::new("unused");
+        let taken = root.file("light");
+        assert_eq!(unused_path(taken), root.0.join("light (2)"));
+    }
+}

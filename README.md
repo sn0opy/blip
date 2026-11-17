@@ -27,6 +27,8 @@ cargo build --release
 | <kbd>PgDn</kbd> / <kbd>PgUp</kbd> | Jump 10 images |
 | <kbd>Home</kbd> / <kbd>End</kbd> | First / last image |
 | <kbd>Delete</kbd> or <kbd>Backspace</kbd> | Delete file permanently (asks first) |
+| <kbd>X</kbd> | Reject or unreject file |
+| <kbd>Shift</kbd>+<kbd>X</kbd> | Move, trash or delete the rejected files (see Settings) |
 | Wheel / drag | Zoom / pan (kept while blinking) |
 | Right-click file | Plate solve, sky links, file actions |
 | Double-click, <kbd>F</kbd> or <kbd>0</kbd> | Reset zoom |
@@ -49,6 +51,10 @@ cargo build --release
 | <kbd>F5</kbd> or <kbd>Ctrl</kbd>+<kbd>R</kbd> | Rescan folder |
 | <kbd>Ctrl</kbd>+<kbd>,</kbd> | Open settings |
 | <kbd>?</kbd> or <kbd>F1</kbd> | This help |
+
+Rejected files are marked red until you handle them or open another folder. By default they
+are moved to `_rejected/` in the opened folder, keeping their subfolders, so you can move them
+back by hand. Settings can switch this to the trash or to deleting them.
 
 On macOS, use <kbd>Cmd</kbd> instead of <kbd>Ctrl</kbd>. A folder or FITS / XISF file can also be
 dropped onto the window to open it.

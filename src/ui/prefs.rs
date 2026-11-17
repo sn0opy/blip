@@ -78,6 +78,34 @@ impl SubjectOrder {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum RejectHandling {
+    #[default]
+    MoveToFolder,
+    MoveToTrash,
+    Delete,
+}
+
+impl RejectHandling {
+    pub const ALL: [Self; 3] = [Self::MoveToFolder, Self::MoveToTrash, Self::Delete];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::MoveToFolder => "Move to rejected folder",
+            Self::MoveToTrash => "Move to trash",
+            Self::Delete => "Delete permanently",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::MoveToFolder => "folder",
+            Self::MoveToTrash => "trash",
+            Self::Delete => "delete",
+        }
+    }
+}
+
 /// The starting state: keys change the session, not these.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Preferences {
@@ -91,6 +119,7 @@ pub struct Preferences {
     pub ahead: usize,
     pub behind: usize,
     pub subject_order: SubjectOrder,
+    pub reject_handling: RejectHandling,
     pub boost: u32,
     pub show_info: bool,
     pub show_debug: bool,
@@ -115,6 +144,7 @@ impl Default for Preferences {
             ahead: 3,
             behind: 1,
             subject_order: SubjectOrder::Size,
+            reject_handling: RejectHandling::MoveToFolder,
             boost: 0,
             show_info: true,
             show_debug: false,
@@ -136,19 +166,26 @@ impl Preferences {
         let Some(storage) = storage else {
             return prefs;
         };
-        let binning = storage.get_string("binning");
-        if let Some(b) = BinningPref::ALL
-            .into_iter()
-            .find(|b| Some(b.key()) == binning.as_deref())
-        {
+        if let Some(b) = saved_choice(storage, "binning", &BinningPref::ALL, BinningPref::key) {
             prefs.binning = b;
         }
-        let subject_order = storage.get_string("subject_order");
-        if let Some(o) = SubjectOrder::ALL
-            .into_iter()
-            .find(|o| Some(o.key()) == subject_order.as_deref())
-        {
+        let order = saved_choice(
+            storage,
+            "subject_order",
+            &SubjectOrder::ALL,
+            SubjectOrder::key,
+        );
+        if let Some(o) = order {
             prefs.subject_order = o;
+        }
+        let handling = saved_choice(
+            storage,
+            "reject_handling",
+            &RejectHandling::ALL,
+            RejectHandling::key,
+        );
+        if let Some(h) = handling {
+            prefs.reject_handling = h;
         }
         let number = |key: &str, max: usize| {
             (storage.get_string(key)?.parse::<usize>().ok()).filter(|&n| n <= max)
@@ -190,6 +227,7 @@ impl Preferences {
         storage.set_string("ahead", self.ahead.to_string());
         storage.set_string("behind", self.behind.to_string());
         storage.set_string("subject_order", self.subject_order.key().into());
+        storage.set_string("reject_handling", self.reject_handling.key().into());
         storage.set_string("boost", self.boost.to_string());
         for (key, flag) in self.flags() {
             storage.set_string(key, flag.to_string());
@@ -213,6 +251,16 @@ impl Preferences {
             ("show_toolbar", &mut self.show_toolbar),
         ]
     }
+}
+
+fn saved_choice<T: Copy>(
+    storage: &dyn Storage,
+    key: &str,
+    options: &[T],
+    key_of: fn(T) -> &'static str,
+) -> Option<T> {
+    let saved = storage.get_string(key)?;
+    options.iter().copied().find(|&o| key_of(o) == saved)
 }
 
 #[derive(Default)]
@@ -254,6 +302,7 @@ mod tests {
             ahead: MAX_PREFETCH,
             behind: 0,
             subject_order: SubjectOrder::Name,
+            reject_handling: RejectHandling::MoveToTrash,
             boost: MAX_BOOST,
             show_info: false,
             show_debug: true,
@@ -284,6 +333,7 @@ mod tests {
             ("ahead", max_prefetch.as_str()),
             ("behind", "-1"),
             ("subject_order", "Name"),
+            ("reject_handling", "Trash"),
             ("boost", max_boost.as_str()),
             ("show_info", "no"),
             ("show_debug", "1"),

@@ -16,7 +16,7 @@ const GROUPS: &[&[Action]] = &[
     &[ZoomFit, ZoomActual],
     &[AutoStretch, ClipFlash],
     &[Tilt, Sky, Stars, Mosaic],
-    &[Delete],
+    &[Reject, Delete],
 ];
 
 #[derive(Clone, Copy)]
@@ -110,6 +110,7 @@ impl App {
             Sky => (has_image, on(&self.sky_view)),
             // Stays switchable when there's no image left, so it can't get stuck on.
             Mosaic => (has_image || self.mosaic, self.mosaic),
+            Reject => (has_image, current.is_some_and(|p| self.list.is_rejected(p))),
             _ => (has_image, false),
         };
         State {
@@ -170,8 +171,8 @@ fn bar(ui: &mut egui::Ui, layout: Layout, state: impl Fn(Action) -> State) -> Op
             painter.rect_filled(button.shrink(layout.pixel), draw::PANEL_RADIUS, fill);
             let color = if !enabled {
                 Color32::from_gray(85)
-            } else if action == Delete && response.hovered() {
-                Color32::from_rgb(235, 100, 100)
+            } else if (action == Delete && response.hovered()) || (action == Reject && active) {
+                draw::RED
             } else if active || response.hovered() {
                 Color32::WHITE
             } else {
@@ -290,6 +291,25 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, action: Action, color: Color3
                     painter.rect_filled(square, 0.0, color);
                 }
             }
+        }
+        Reject => {
+            line(&[
+                (0.1, -0.6),
+                (-0.85, -0.6),
+                (-0.85, 0.75),
+                (0.85, 0.75),
+                (0.85, -0.1),
+            ]);
+            line(&[
+                (-0.85, 0.5),
+                (-0.35, 0.0),
+                (0.05, 0.4),
+                (0.35, 0.15),
+                (0.85, 0.6),
+            ]);
+            dot(-0.45, -0.3, 1.2);
+            line(&[(0.3, -0.9), (0.9, -0.3)]);
+            line(&[(0.3, -0.3), (0.9, -0.9)]);
         }
         Delete => {
             line(&[(-0.8, -0.55), (0.8, -0.55)]);

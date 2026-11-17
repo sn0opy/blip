@@ -12,6 +12,7 @@ pub struct FileList {
     dir: Option<PathBuf>,
     listed: Vec<ListedImage>,
     files: Vec<PathBuf>,
+    rejected: HashSet<PathBuf>,
     selected: usize,
     /// The image last selected, kept while the filter hides it.
     anchor: Option<PathBuf>,
@@ -34,6 +35,7 @@ impl FileList {
             dir: None,
             listed: Vec::new(),
             files: Vec::new(),
+            rejected: HashSet::new(),
             selected: 0,
             anchor: None,
             filter: String::new(),
@@ -77,6 +79,7 @@ impl FileList {
     pub fn open(&mut self, dir: PathBuf, file: Option<PathBuf>) {
         self.scanner.cancel();
         self.headers.clear();
+        self.rejected.clear();
         self.filter.clear();
         self.query = Filter::default();
         self.tree = FolderTree::new(&dir);
@@ -92,6 +95,7 @@ impl FileList {
             .map(|image| image.path.as_path())
             .collect();
         self.headers.retain(|p| listed.contains(p));
+        self.rejected.retain(|p| listed.contains(p.as_path()));
         self.headers.forget_failures();
         self.apply_filter();
         self.update_header_scan(true);
@@ -117,18 +121,63 @@ impl FileList {
         self.selected
     }
 
-    pub fn remove(&mut self, path: &Path) {
-        self.listed.retain(|image| image.path != path);
-        self.headers.remove(path);
-        if let Some(i) = self.files.iter().position(|p| p == path) {
-            self.files.remove(i);
-            self.tree.rebuild(&self.files, self.grouped);
-            if self.selected > i || self.selected >= self.files.len() {
-                self.selected = self.selected.saturating_sub(1);
-            }
+    /// The selection moves on to the next remaining image.
+    pub fn remove(&mut self, paths: &[PathBuf]) {
+        let gone: HashSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
+        self.listed
+            .retain(|image| !gone.contains(image.path.as_path()));
+        for path in &gone {
+            self.headers.remove(path);
+            self.rejected.remove(*path);
+        }
+        let shown = self.files.len();
+        let kept_before_selected = (self.files.iter().take(self.selected))
+            .filter(|p| !gone.contains(p.as_path()))
+            .count();
+        self.files.retain(|p| !gone.contains(p.as_path()));
+        if self.files.len() != shown {
+            self.selected = kept_before_selected.min(self.files.len().saturating_sub(1));
             self.anchor = self.current().cloned();
+            self.tree.rebuild(&self.files, self.grouped);
         }
         self.scroll_to_selected = true;
+    }
+
+    pub fn is_rejected(&self, path: &Path) -> bool {
+        self.rejected.contains(path)
+    }
+
+    /// Returns whether the image is rejected now.
+    pub fn toggle_rejected(&mut self, path: &Path) -> bool {
+        let rejected = !self.rejected.remove(path);
+        if rejected {
+            self.rejected.insert(path.to_path_buf());
+        }
+        rejected
+    }
+
+    pub fn clear_rejected(&mut self) {
+        self.rejected.clear();
+    }
+
+    /// Including the ones the filter hides.
+    pub fn rejected_count(&self) -> usize {
+        self.rejected.len()
+    }
+
+    pub fn rejected_in(&self, folder: &Path) -> usize {
+        (self.rejected.iter())
+            .filter(|p| p.starts_with(folder))
+            .count()
+    }
+
+    /// In listing order, including the ones the filter hides.
+    pub fn rejected(&self) -> Vec<PathBuf> {
+        (self.listed.iter())
+            .map(|image| &image.path)
+            .filter(|p| self.rejected.contains(*p))
+            .cloned()
+            .collect()
     }
 
     pub fn filter(&self) -> &str {
@@ -386,10 +435,51 @@ mod tests {
     fn removing_the_selected_image_selects_the_next_one() {
         let mut list = list(&["/r/1", "/r/2", "/r/3"]);
         list.select(1);
-        list.remove(Path::new("/r/2"));
+        list.remove(&[PathBuf::from("/r/2")]);
         assert_eq!(current(&list), "/r/3");
-        list.remove(Path::new("/r/3"));
+        list.remove(&[PathBuf::from("/r/3")]);
         assert_eq!(current(&list), "/r/1");
         assert!(!list.is_listed(Path::new("/r/3")));
+    }
+
+    #[test]
+    fn removing_several_images_selects_the_next_remaining_one() {
+        let mut list = list(&["/r/1", "/r/2", "/r/3", "/r/4", "/r/5"]);
+        list.select(2);
+        list.remove(&["/r/1", "/r/3", "/r/4"].map(PathBuf::from));
+        assert_eq!(current(&list), "/r/5");
+        assert_eq!(list.files(), ["/r/2", "/r/5"].map(PathBuf::from));
+    }
+
+    #[test]
+    fn removing_a_hidden_image_keeps_the_selection() {
+        let mut list = list(&["/r/a1", "/r/b1", "/r/a2"]);
+        list.select(2);
+        filter(&mut list, "a");
+        list.remove(&[PathBuf::from("/r/b1")]);
+        assert_eq!(current(&list), "/r/a2");
+        filter(&mut list, "");
+        assert_eq!(list.files(), ["/r/a1", "/r/a2"].map(PathBuf::from));
+    }
+
+    #[test]
+    fn rejections_last_until_another_folder_is_opened() {
+        let mut list = list(&["/r/a/1", "/r/a/2", "/r/b/3"]);
+        assert!(list.toggle_rejected(Path::new("/r/b/3")));
+        assert!(list.toggle_rejected(Path::new("/r/a/1")));
+        assert!(list.toggle_rejected(Path::new("/r/a/2")));
+        assert!(!list.toggle_rejected(Path::new("/r/a/2")));
+        filter(&mut list, "b");
+        assert_eq!(list.rejected(), ["/r/a/1", "/r/b/3"].map(PathBuf::from));
+        assert_eq!(list.rejected_in(Path::new("/r/a")), 1);
+
+        list.set_listing(["/r/a/1", "/r/a/2"].map(PathBuf::from).into());
+        assert_eq!(list.rejected(), [PathBuf::from("/r/a/1")]);
+        list.remove(&[PathBuf::from("/r/a/1")]);
+        assert_eq!(list.rejected_count(), 0);
+
+        list.toggle_rejected(Path::new("/r/a/2"));
+        list.open(PathBuf::from("/r"), None);
+        assert_eq!(list.rejected_count(), 0);
     }
 }

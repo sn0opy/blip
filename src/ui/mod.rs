@@ -12,10 +12,12 @@ mod list;
 mod loader;
 mod menu;
 mod prefs;
+mod rejects;
 mod scan;
 mod texture;
 mod toggles;
 mod toolbar;
+mod trash;
 mod tree;
 mod view;
 
@@ -27,6 +29,7 @@ use blip_core::process::StretchParams;
 use blip_core::solve::Solution;
 use blip_core::stars::StarStats;
 use blip_core::tilt::Tilt;
+use dialogs::Deletion;
 use eframe::egui::{self, Vec2};
 use headers::{HeaderScanner, Progress};
 use list::FileList;
@@ -173,7 +176,7 @@ pub struct App {
     menu_file: Option<PathBuf>,
 
     prefs: Preferences,
-    confirm_delete: Option<PathBuf>,
+    confirm_delete: Option<Deletion>,
     show_help: bool,
     show_settings: bool,
     show_header: bool,
@@ -680,15 +683,26 @@ impl App {
             self.set_status(format!("Delete failed: {e}"), Some(8.0));
             return;
         }
-        self.cache.remove(path);
-        self.errors.remove(path);
-        self.stars.remove(path);
-        if self.shown.as_deref() == Some(path) {
-            self.shown = None;
-        }
-        self.list.remove(path);
+        self.forget(&[path.to_path_buf()]);
         self.set_status(format!("Deleted {}", file_name(path)), Some(2.5));
         self.request_loads();
+    }
+
+    /// Drops files that are no longer in the folder.
+    fn forget(&mut self, files: &[PathBuf]) {
+        for file in files {
+            self.cache.remove(file);
+            self.errors.remove(file);
+            self.stars.remove(file);
+        }
+        if self
+            .shown
+            .as_ref()
+            .is_some_and(|shown| files.contains(shown))
+        {
+            self.shown = None;
+        }
+        self.list.remove(files);
     }
 
     fn set_status(&mut self, text: String, ttl: Option<f32>) {
@@ -837,6 +851,14 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+fn file_count(n: usize) -> String {
+    if n == 1 {
+        "1 file".into()
+    } else {
+        format!("{n} files")
+    }
 }
 
 /// The message of a caught panic.

@@ -8,6 +8,8 @@ use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::cell::RefCell;
 
 pub const PANEL_RADIUS: f32 = 4.0;
+/// Unreadable and rejected files.
+pub const RED: Color32 = Color32::from_rgb(225, 95, 95);
 
 /// Circle every measured star and label it with its HFR.
 pub fn stars(
