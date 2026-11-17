@@ -3,7 +3,7 @@ use super::gpu::MemoryBudget;
 use super::headers::HeaderIndex;
 use super::loader::Work;
 use super::tree::Row;
-use super::{App, CacheEntry, MeasuredStars, STATUS_FADE, draw, file_name};
+use super::{App, CacheEntry, ImageToggle, MeasuredStars, STATUS_FADE, draw, file_name};
 use blip_core::process::StretchParams;
 use eframe::egui::{self, AtomExt as _, Color32, Pos2, Rect, Vec2};
 use std::path::{Path, PathBuf};
@@ -16,6 +16,18 @@ const REJECTED_BORDER: f32 = 3.0;
 const FILTER_CORNER_RADIUS: u8 = 3;
 const FILTER_TIP: &str =
     "Images whose path contains all words.\n-word leaves out, \"two words\" keeps the space.";
+
+#[derive(PartialEq)]
+pub(super) struct OverlayState {
+    path: PathBuf,
+    view: Rect,
+    img_rect: Rect,
+    toolbar_height: f32,
+    pixels_per_point: f32,
+    stars: bool,
+    tilt: bool,
+    sky: bool,
+}
 
 impl App {
     pub(super) fn file_list(&mut self, ui: &mut egui::Ui) {
@@ -327,31 +339,39 @@ impl App {
                     painter.image(overlay.texture.id(), img_rect, overlay.uv, Color32::WHITE);
                 }
 
-                if is_current
-                    && self.star_view.is_on(path)
-                    && let Some(st) = stars
-                {
-                    draw::stars(&painter, rect, img_rect, loaded.src_size, &st.stats);
-                }
-                if is_current
-                    && self.tilt_view.is_on(path)
-                    && let Some(tilt) = stars.and_then(|s| s.tilt.as_ref())
-                {
-                    draw::tilt(&painter, img_rect, loaded.src_size, tilt);
-                }
-                if is_current
-                    && self.sky_view.is_on(path)
-                    && let Some(Ok(sol)) = stars.map(|s| &s.solution)
-                {
-                    draw::sky(
-                        &painter,
-                        rect,
-                        toolbar_height,
-                        img_rect,
-                        loaded.src_size,
-                        &sol.wcs,
-                    );
-                }
+                let shown_on = |toggle: &ImageToggle| is_current && toggle.is_on(path);
+                let star_stats = stars
+                    .map(|s| &s.stats)
+                    .filter(|_| shown_on(&self.star_view));
+                let tilt =
+                    (stars.and_then(|s| s.tilt.as_ref())).filter(|_| shown_on(&self.tilt_view));
+                let wcs = (stars.and_then(|s| s.solution.as_ref().ok()))
+                    .map(|solution| &solution.wcs)
+                    .filter(|_| shown_on(&self.sky_view));
+                let state = OverlayState {
+                    path: path.clone(),
+                    view: rect,
+                    img_rect,
+                    toolbar_height,
+                    pixels_per_point: ui.ctx().pixels_per_point(),
+                    stars: star_stats.is_some(),
+                    tilt: tilt.is_some(),
+                    sky: wcs.is_some(),
+                };
+                let src_size = loaded.src_size;
+                let visible_image = img_rect.intersect(rect);
+                self.overlay
+                    .paint(&painter, visible_image, state, |overlay| {
+                        if let Some(st) = star_stats {
+                            draw::stars(overlay, rect, img_rect, src_size, st);
+                        }
+                        if let Some(tilt) = tilt {
+                            draw::tilt(overlay, img_rect, src_size, tilt);
+                        }
+                        if let Some(wcs) = wcs {
+                            draw::sky(overlay, rect, toolbar_height, img_rect, src_size, wcs);
+                        }
+                    });
             }
 
             if self.show_info {

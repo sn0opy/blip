@@ -42,9 +42,26 @@ impl SortColumn {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) struct Sort {
+struct Sort {
     column: SortColumn,
     descending: bool,
+}
+
+#[derive(Default)]
+pub(super) struct HeaderTable {
+    sort: Option<Sort>,
+    order: Option<Vec<usize>>,
+}
+
+impl HeaderTable {
+    fn order(&mut self, cards: &[Card]) -> &[usize] {
+        self.order.get_or_insert_with(|| sorted(cards, self.sort))
+    }
+
+    fn sort_by(&mut self, column: SortColumn) {
+        self.sort = next_sort(self.sort, column);
+        self.order = None;
+    }
 }
 
 fn next_sort(sort: Option<Sort>, column: SortColumn) -> Option<Sort> {
@@ -98,7 +115,7 @@ impl App {
         let stale = (self.stale.as_ref()).filter(|(p, _)| *p == path);
         let cards = (self.cache.get(&path).or(stale.map(|(_, e)| e))).map(|e| &e.loaded.cards);
         let error = self.errors.get(&path);
-        let mut sort = self.header_sort;
+        let header_table = &mut self.header_table;
         let mut close = false;
         let modal = egui::Modal::new(egui::Id::unique("header")).show(ctx, |ui| {
             let screen = ctx.content_rect();
@@ -116,7 +133,7 @@ impl App {
                     let max_height = screen.height() - FIXED_HEIGHT;
                     egui::ScrollArea::both()
                         .max_height(max_height)
-                        .show(ui, |ui| table(ui, cards, &mut sort));
+                        .show(ui, |ui| table(ui, cards, header_table));
                 }
                 (None, Some(e)) => {
                     ui.weak(format!("Cannot read the file: {e}"));
@@ -130,7 +147,6 @@ impl App {
                 close = true;
             }
         });
-        self.header_sort = sort;
         if close || actions::pressed(ctx, Action::Header) || modal.should_close() {
             self.show_header = false;
         }
@@ -138,12 +154,14 @@ impl App {
 
     pub(super) fn open_header(&mut self) {
         self.show_header = true;
-        self.header_sort = None;
+        self.header_table = HeaderTable::default();
     }
 }
 
-fn table(ui: &mut egui::Ui, cards: &[Card], sort: &mut Option<Sort>) {
-    let order = sorted(cards, *sort);
+fn table(ui: &mut egui::Ui, cards: &[Card], header_table: &mut HeaderTable) {
+    let sort = header_table.sort;
+    let mut clicked = None;
+    let order = header_table.order(cards);
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
     let row_height =
         ui.text_style_height(&egui::TextStyle::Body) + 2.0 * ui.spacing().item_spacing.y;
@@ -161,7 +179,7 @@ fn table(ui: &mut egui::Ui, cards: &[Card], sort: &mut Option<Sort>) {
                         sort_arrow(ui, response.rect, s.descending);
                     }
                     if response.clicked() {
-                        *sort = next_sort(*sort, column);
+                        clicked = Some(column);
                     }
                 });
             }
@@ -179,6 +197,9 @@ fn table(ui: &mut egui::Ui, cards: &[Card], sort: &mut Option<Sort>) {
                 }
             });
         });
+    if let Some(column) = clicked {
+        header_table.sort_by(column);
+    }
 }
 
 /// The bundled fonts have no arrow glyphs.
@@ -229,6 +250,15 @@ mod tests {
         assert!(desc.is_some_and(|s| s.descending));
         assert_eq!(next_sort(desc, SortColumn::Value), None);
         assert!(!next_sort(desc, SortColumn::Keyword).unwrap().descending);
+    }
+
+    #[test]
+    fn keeps_the_order_until_sorted_by_a_column() {
+        let cards = [card("B", None, ""), card("A", None, "")];
+        let mut table = HeaderTable::default();
+        assert_eq!(table.order(&cards), [0, 1]);
+        table.sort_by(SortColumn::Keyword);
+        assert_eq!(table.order(&cards), [1, 0]);
     }
 
     #[test]
