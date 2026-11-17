@@ -2,6 +2,7 @@
 //! views and dialogs live in the submodules.
 
 mod actions;
+mod align;
 mod cache;
 mod dialogs;
 mod draw;
@@ -120,6 +121,7 @@ pub struct App {
     stars: HashMap<PathBuf, MeasuredStars>,
     /// The file whose context menu is open; its stars are measured first.
     menu_file: Option<PathBuf>,
+    align_to: Option<PathBuf>,
 
     prefs: Preferences,
     confirm_delete: Option<Deletion>,
@@ -224,6 +226,7 @@ impl App {
             boost: prefs.boost,
             full_res: false,
             mosaic: false,
+            align_to: None,
             show_info: prefs.show_info,
             show_debug: prefs.show_debug,
             gpu_info: cc
@@ -280,6 +283,7 @@ impl App {
         self.direction = 1;
         self.cache.clear();
         self.stars.clear();
+        self.align_to = None;
         self.shown = None;
         self.files_changed();
         self.refresh();
@@ -393,7 +397,9 @@ impl App {
         };
         let images = missing(&|p| self.cache.contains(p));
         let stars = missing(&|p| self.stars.contains_key(p));
-        let urgent_stars = (self.menu_file.clone()).filter(|p| !self.stars.contains_key(p));
+        let urgent_stars = (self.menu_file.iter().chain(&self.align_to))
+            .find(|p| !self.stars.contains_key(*p))
+            .cloned();
         let waiting = self.current().is_some_and(|c| images.first() == Some(c));
         let images = (images.into_iter())
             .map(|p| {
@@ -465,6 +471,11 @@ impl App {
                     self.out_of_memory(path);
                 }
                 Message::Stars(path, measured) if self.list.is_listed(&path) => {
+                    if self.align_to.as_ref() == Some(&path)
+                        && let Err(e) = &measured.solution
+                    {
+                        self.reject_reference(&path, e);
+                    }
                     self.stars.insert(path, *measured);
                 }
                 _ => {}
@@ -602,6 +613,9 @@ impl App {
             .is_some_and(|shown| files.contains(shown))
         {
             self.shown = None;
+        }
+        if self.align_to.as_ref().is_some_and(|r| files.contains(r)) {
+            self.align_to = None;
         }
         self.list.remove(files);
     }

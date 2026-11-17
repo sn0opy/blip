@@ -1,8 +1,9 @@
-use super::App;
 use super::actions::{Action, key_hint, keys};
 use super::prefs::BinningPref;
+use super::{App, file_name};
 use blip_core::process::{BOOST_STEP_PERCENT, MAX_BOOST};
 use eframe::egui::Vec2;
+use std::path::Path;
 
 impl App {
     pub(super) fn change_boost(&mut self, delta: i32) {
@@ -129,6 +130,36 @@ impl App {
         );
         if self.loads_full_res() != was_full {
             self.reload_all();
+        }
+    }
+
+    pub(super) fn toggle_align(&mut self) {
+        let key = key_hint(Action::Align);
+        if self.align_to.take().is_some() {
+            self.status
+                .set(format!("Star alignment off ({key} to toggle)"), Some(2.0));
+            return;
+        }
+        let Some(reference) = self.current().cloned() else {
+            return;
+        };
+        let name = file_name(&reference);
+        let text = match self.stars.get(&reference).map(|s| &s.solution) {
+            Some(Err(e)) => return self.reject_reference(&reference, &e.clone()),
+            Some(Ok(_)) => format!("Aligning stars to {name} ({key} to toggle)"),
+            None => format!("Aligning stars to {name} once plate solved ({key} to toggle)"),
+        };
+        self.status.set(text, Some(2.0));
+        self.align_to = Some(reference);
+        self.request_loads();
+    }
+
+    pub(super) fn reject_reference(&mut self, reference: &Path, error: &str) {
+        let name = file_name(reference);
+        let text = format!("Can't align stars to {name}: plate solve failed: {error}");
+        self.status.set(text, Some(4.0));
+        if self.align_to.as_deref() == Some(reference) {
+            self.align_to = None;
         }
     }
 }

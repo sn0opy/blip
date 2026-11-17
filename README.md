@@ -40,6 +40,7 @@ cargo build --release
 | <kbd>T</kbd> | Toggle sensor tilt (corner HFR) on this image |
 | <kbd>P</kbd> | Toggle plate solve annotation on this image |
 | <kbd>G</kbd> | Toggle corner mosaic (aberration inspection) |
+| <kbd>L</kbd> | Toggle star alignment to the current image (by plate solve) |
 | <kbd>B</kbd> | Toggle binned preview / full resolution |
 | <kbd>N</kbd> | Toggle background neutralization (white balance) |
 | <kbd>I</kbd> | Toggle info overlay |

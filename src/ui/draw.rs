@@ -1,6 +1,7 @@
 //! Painting helpers for overlays on top of the image. (Clipped pixels are a texture,
 //! see `texture::clip_overlay`.)
 
+use super::align::Alignment;
 use super::subject_name;
 use blip_core::stars::StarStats;
 use blip_core::tilt::Tilt;
@@ -158,18 +159,41 @@ impl OverlayBuilder<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct Placement<'a> {
+    /// The reference's when aligned.
+    pub rect: Rect,
+    pub image_size: [usize; 2],
+    pub alignment: Option<&'a Alignment>,
+}
+
+impl Placement<'_> {
+    fn points_per_pixel(&self) -> f32 {
+        match self.alignment {
+            Some(a) => {
+                let per_reference_pixel = self.rect.width() / a.reference_size[0] as f32;
+                per_reference_pixel * a.reference_pixels_per_pixel() as f32
+            }
+            None => self.rect.width() / self.image_size[0] as f32,
+        }
+    }
+
+    fn pixel_center(&self, x: f32, y: f32) -> Option<Pos2> {
+        match self.alignment {
+            Some(a) => a.screen_pos(self.rect, x as f64, y as f64),
+            None => Some(self.rect.min + Vec2::new(x + 0.5, y + 0.5) * self.points_per_pixel()),
+        }
+    }
+}
+
 /// Circle every measured star and label it with its HFR.
-pub fn stars(
-    overlay: &mut OverlayBuilder,
-    clip: Rect,
-    img_rect: Rect,
-    src_size: [usize; 2],
-    st: &StarStats,
-) {
-    let scale = img_rect.width() / src_size[0] as f32;
+pub fn stars(overlay: &mut OverlayBuilder, clip: Rect, placement: Placement, st: &StarStats) {
+    let scale = placement.points_per_pixel();
     let font = egui::FontId::proportional(11.0);
     for star in &st.stars {
-        let p = img_rect.min + Vec2::new(star.x + 0.5, star.y + 0.5) * scale;
+        let Some(p) = placement.pixel_center(star.x, star.y) else {
+            continue;
+        };
         if !clip.expand(20.0).contains(p) {
             continue;
         }
@@ -186,16 +210,24 @@ pub fn stars(
 }
 
 /// The tilt polygon with its diagonals, labeled with the corner and center HFRs.
-pub fn tilt(overlay: &mut OverlayBuilder, img_rect: Rect, src_size: [usize; 2], tilt: &Tilt) {
-    let scale = img_rect.width() / src_size[0] as f32;
+pub fn tilt(overlay: &mut OverlayBuilder, placement: Placement, tilt: &Tilt) {
+    let [w, h] = placement.image_size;
+    let edge_on_screen = |x: f32, y: f32| placement.pixel_center(x - 0.5, y - 0.5);
+    let Some(center) = edge_on_screen(w as f32 / 2.0, h as f32 / 2.0) else {
+        return;
+    };
+    let mut corners = [Pos2::ZERO; 4];
+    for (corner, (x, y)) in corners.iter_mut().zip(tilt.polygon(w, h)) {
+        let Some(p) = edge_on_screen(x, y) else {
+            return;
+        };
+        *corner = p;
+    }
     let stroke = egui::Stroke::new(1.0, GREEN);
     let font = egui::FontId::proportional(13.0);
     let mut label = |pos: Pos2, align: egui::Align2, hfr: f32| {
         overlay.text_with_shadow(pos, align, format!("{hfr:.2}"), &font, GREEN);
     };
-
-    let corners = (tilt.polygon(src_size[0], src_size[1]))
-        .map(|(x, y)| img_rect.min + Vec2::new(x, y) * scale);
     // Each label goes on the outer side of its corner.
     let away = |d: f32| {
         if d < 0.0 {
@@ -205,12 +237,15 @@ pub fn tilt(overlay: &mut OverlayBuilder, img_rect: Rect, src_size: [usize; 2], 
         }
     };
     for (p, hfr) in corners.into_iter().zip(tilt.corners) {
-        let d = p - img_rect.center();
+        let d = p - center;
         let out = Vec2::new(d.x.signum(), d.y.signum());
         label(p + out * 4.0, egui::Align2([away(d.x), away(d.y)]), hfr);
     }
-    let center = img_rect.center() + Vec2::new(8.0, 0.0);
-    label(center, egui::Align2::LEFT_CENTER, tilt.center);
+    label(
+        center + Vec2::new(8.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        tilt.center,
+    );
     overlay.add(egui::Shape::closed_line(corners.to_vec(), stroke));
     overlay.add(egui::Shape::line_segment([corners[0], corners[2]], stroke));
     overlay.add(egui::Shape::line_segment([corners[1], corners[3]], stroke));

@@ -15,7 +15,7 @@ const GROUPS: &[&[Action]] = &[
     &[Step(-1), Step(1)],
     &[ZoomFit, ZoomActual],
     &[AutoStretch, ClipFlash],
-    &[Tilt, Sky, Stars, Mosaic],
+    &[Tilt, Sky, Stars, Mosaic, Align],
     &[Reject, Delete],
 ];
 
@@ -110,6 +110,10 @@ impl App {
             Sky => (has_image, on(&self.sky_view)),
             // Stays switchable when there's no image left, so it can't get stuck on.
             Mosaic => (has_image || self.mosaic, self.mosaic),
+            Align => (
+                has_image || self.align_to.is_some(),
+                self.align_to.is_some(),
+            ),
             Reject => (has_image, current.is_some_and(|p| self.list.is_rejected(p))),
             _ => (has_image, false),
         };
@@ -150,10 +154,14 @@ fn bar(ui: &mut egui::Ui, layout: Layout, state: impl Fn(Action) -> State) -> Op
             } else {
                 Sense::hover()
             };
-            let response = actions::tooltip(
-                ui.interact(button, ui.scope_id().with(action), sense),
-                action,
-            );
+            let response = ui.interact(button, ui.scope_id().with(action), sense);
+            let response = match action {
+                Align if button_state.active => {
+                    actions::tooltip_text(response, "Disable star alignment", action)
+                }
+                Align => actions::tooltip_text(response, "Enable star alignment", action),
+                _ => actions::tooltip(response, action),
+            };
             if response.clicked() {
                 clicked = Some(action);
             }
@@ -303,6 +311,24 @@ fn paint_icon(painter: &egui::Painter, rect: Rect, action: Action, color: Color3
                     painter.rect_filled(square, 0.0, color);
                 }
             }
+        }
+        Align => {
+            let behind = [
+                (-0.87, -0.59),
+                (0.3, -0.88),
+                (0.57, 0.19),
+                (-0.6, 0.48),
+                (-0.87, -0.59),
+            ];
+            let behind: Vec<Pos2> = behind.iter().map(|&(x, y)| p(x, y)).collect();
+            painter.extend(egui::Shape::dashed_line(
+                &behind,
+                stroke,
+                0.35 * half,
+                0.2 * half,
+            ));
+            closed(&[(-0.4, -0.3), (0.8, -0.3), (0.8, 0.8), (-0.4, 0.8)]);
+            dot(0.1, 0.2, 1.4);
         }
         Reject => {
             line(&[

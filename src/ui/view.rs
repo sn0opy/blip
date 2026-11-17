@@ -1,4 +1,5 @@
 use super::actions::{self, Action};
+use super::align::Alignment;
 use super::gpu::MemoryBudget;
 use super::headers::HeaderIndex;
 use super::loader::{ClipOverlay, Loaded, LoaderStatus, MeasuredStars, Work};
@@ -28,6 +29,7 @@ pub(super) struct OverlayState {
     stars: bool,
     tilt: bool,
     sky: bool,
+    reference: Option<PathBuf>,
 }
 
 impl App {
@@ -309,14 +311,37 @@ impl App {
             paint_mosaic(painter, view, ppp, loaded, flash);
             return;
         }
-        let size = Vec2::new(loaded.size[0] as f32, loaded.size[1] as f32);
+        let alignment = self.alignment(path);
+        let (size, src_width) = match &alignment {
+            Some(a) => {
+                let [w, h] = a.reference_size;
+                (Vec2::new(w as f32, h as f32), w)
+            }
+            None => (
+                Vec2::new(loaded.size[0] as f32, loaded.size[1] as f32),
+                loaded.src_size[0],
+            ),
+        };
         let fit = (view.width() / size.x).min(view.height() / size.y);
         if self.actual_size {
-            self.zoom = loaded.src_size[0] as f32 / (ppp * size.x * fit);
+            self.zoom = src_width as f32 / (ppp * size.x * fit);
         }
         let img_rect = Rect::from_center_size(view.center() + self.pan, size * fit * self.zoom);
-        paint_image(painter, img_rect, loaded, flash);
-        self.paint_overlays(painter, view, toolbar_height, img_rect, path, is_current);
+        match &alignment {
+            Some(a) => paint_aligned(painter, img_rect, loaded, flash, a),
+            None => paint_image(painter, img_rect, loaded, flash),
+        }
+        let placement = draw::Placement {
+            rect: img_rect,
+            image_size: loaded.src_size,
+            alignment: alignment.as_ref(),
+        };
+        self.paint_overlays(painter, view, toolbar_height, placement, path, is_current);
+    }
+
+    fn alignment(&self, path: &Path) -> Option<Alignment> {
+        let solved = |p: &Path| self.stars.get(p)?.solution.as_ref().ok();
+        Alignment::new(solved(self.align_to.as_deref()?)?, solved(path)?)
     }
 
     fn paint_overlays(
@@ -324,22 +349,25 @@ impl App {
         painter: &egui::Painter,
         view: Rect,
         toolbar_height: f32,
-        img_rect: Rect,
+        placement: draw::Placement,
         path: &Path,
         is_current: bool,
     ) {
-        let Some(src_size) = self.cache.rendered(path).map(|l| l.src_size) else {
-            return;
-        };
         let stars = self.stars.get(path);
         let shown_on = |toggle: &ImageToggle| is_current && toggle.is_on(path);
         let star_stats = stars
             .map(|s| &s.stats)
             .filter(|_| shown_on(&self.star_view));
         let tilt = (stars.and_then(|s| s.tilt.as_ref())).filter(|_| shown_on(&self.tilt_view));
-        let wcs = (stars.and_then(|s| s.solution.as_ref().ok()))
-            .map(|solution| &solution.wcs)
-            .filter(|_| shown_on(&self.sky_view));
+        let (wcs, frame_size) = match placement.alignment {
+            Some(a) => (Some(a.reference_wcs()), a.reference_size),
+            None => (
+                (stars.and_then(|s| s.solution.as_ref().ok())).map(|s| &s.wcs),
+                placement.image_size,
+            ),
+        };
+        let wcs = wcs.filter(|_| shown_on(&self.sky_view));
+        let img_rect = placement.rect;
         let state = OverlayState {
             path: path.to_path_buf(),
             view,
@@ -349,18 +377,19 @@ impl App {
             stars: star_stats.is_some(),
             tilt: tilt.is_some(),
             sky: wcs.is_some(),
+            reference: placement.alignment.and(self.align_to.clone()),
         };
         let visible_image = img_rect.intersect(view);
         self.overlay
             .paint(painter, visible_image, state, |overlay| {
                 if let Some(st) = star_stats {
-                    draw::stars(overlay, view, img_rect, src_size, st);
+                    draw::stars(overlay, view, placement, st);
                 }
                 if let Some(tilt) = tilt {
-                    draw::tilt(overlay, img_rect, src_size, tilt);
+                    draw::tilt(overlay, placement, tilt);
                 }
                 if let Some(wcs) = wcs {
-                    draw::sky(overlay, view, toolbar_height, img_rect, src_size, wcs);
+                    draw::sky(overlay, view, toolbar_height, img_rect, frame_size, wcs);
                 }
             });
     }
@@ -591,6 +620,25 @@ fn paint_image(
     painter.image(loaded.texture.id(), img_rect, uv, Color32::WHITE);
     if let Some(overlay) = flash {
         painter.image(overlay.texture.id(), img_rect, overlay.uv, Color32::WHITE);
+    }
+}
+
+fn paint_aligned(
+    painter: &egui::Painter,
+    reference_rect: Rect,
+    loaded: &Loaded,
+    flash: Option<&ClipOverlay>,
+    alignment: &Alignment,
+) {
+    let full = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+    let Some(mesh) = alignment.mesh(loaded.texture.id(), full, reference_rect) else {
+        return;
+    };
+    painter.add(egui::Shape::mesh(mesh));
+    if let Some(overlay) = flash
+        && let Some(mesh) = alignment.mesh(overlay.texture.id(), overlay.uv, reference_rect)
+    {
+        painter.add(egui::Shape::mesh(mesh));
     }
 }
 

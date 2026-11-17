@@ -23,6 +23,7 @@ pub enum Action {
     Tilt,
     Sky,
     Mosaic,
+    Align,
     FullRes,
     Neutralize,
     Info,
@@ -201,6 +202,12 @@ pub const SHORTCUTS: &[Shortcut] = &[
     )
     .named("Corner mosaic"),
     row(
+        "L",
+        "Toggle star alignment to the current image (by plate solve)",
+        &[key(Key::L, Align)],
+    )
+    .named("Star alignment"),
+    row(
         "B",
         "Toggle binned preview / full resolution",
         &[key(Key::B, FullRes)],
@@ -322,8 +329,12 @@ pub fn label(style: &egui::Style, action: Action) -> egui::text::LayoutJob {
 
 /// The action's [`label`] as a tooltip, built only while it is shown.
 pub fn tooltip(response: egui::Response, action: Action) -> egui::Response {
+    tooltip_text(response, name(action), action)
+}
+
+pub fn tooltip_text(response: egui::Response, text: &str, action: Action) -> egui::Response {
     response.on_hover_ui(|ui| {
-        ui.label(label(ui.style(), action));
+        ui.label(with_key(ui.style(), text, &key_hint(action)));
     })
 }
 
@@ -413,6 +424,7 @@ impl App {
             Tilt => self.toggle_tilt_view(),
             Sky => self.toggle_sky_view(),
             Mosaic => self.toggle_mosaic(),
+            Align => self.toggle_align(),
             FullRes => self.toggle_full_res(),
             Neutralize => {
                 self.params.neutralize = !self.params.neutralize;
