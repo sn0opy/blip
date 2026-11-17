@@ -11,6 +11,8 @@ use std::path::PathBuf;
 pub(super) const DIALOG_WIDTH: f32 = 380.0;
 /// The heading, Close button, frame and a gap to the window's edges.
 const SETTINGS_FIXED_HEIGHT: f32 = 140.0;
+/// The heading, the two lines below the shortcuts, frame and a gap to the window's edges.
+const HELP_FIXED_HEIGHT: f32 = 160.0;
 
 pub(super) enum Deletion {
     File(PathBuf),
@@ -22,20 +24,12 @@ impl App {
         if !self.show_help {
             return;
         }
-        let grid = egui::Grid::new("shortcuts")
-            .num_columns(2)
-            .spacing([24.0, 6.0]);
-        let modal = egui::Modal::new(egui::Id::unique("help")).show(ctx, |ui| {
+        let (frame, scroll, _) = scrolling_modal(ctx, HELP_FIXED_HEIGHT);
+        let modal = egui::Modal::new(egui::Id::unique("help")).frame(frame);
+        let modal = modal.show(ctx, |ui| {
             ui.heading("Keyboard shortcuts");
             ui.add_space(6.0);
-            grid.show(ui, |ui| {
-                for shortcut in SHORTCUTS {
-                    let keys = actions::platform_keys(shortcut.keys);
-                    ui.label(egui::RichText::new(keys).monospace().strong());
-                    ui.label(shortcut.description);
-                    ui.end_row();
-                }
-            });
+            scroll.show(ui, shortcuts_grid);
             ui.add_space(6.0);
             let close = format!("Press {} or Esc to close", actions::key_hint(Action::Help));
             ui.label(egui::RichText::new(close).weak());
@@ -53,15 +47,8 @@ impl App {
         }
         let mut prefs = self.prefs_draft.unwrap_or(self.prefs);
         let gpu_limit = self.loader.max_texture_side();
-        let mut frame = egui::Frame::popup(&ctx.global_style());
-        let scrollbar_margin = egui::Margin {
-            right: std::mem::take(&mut frame.inner_margin.right),
-            ..egui::Margin::ZERO
-        };
-        let scroll = egui::ScrollArea::vertical()
-            .max_height(ctx.content_rect().height() - SETTINGS_FIXED_HEIGHT)
-            .auto_shrink([false, true])
-            .content_margin(scrollbar_margin);
+        let (frame, scroll, scrollbar_margin) = scrolling_modal(ctx, SETTINGS_FIXED_HEIGHT);
+        let scroll = scroll.auto_shrink([false, true]);
         let modal = egui::Modal::new(egui::Id::unique("settings")).frame(frame);
         let modal = modal.show(ctx, |ui| {
             ui.set_width(DIALOG_WIDTH + f32::from(scrollbar_margin.right));
@@ -138,6 +125,37 @@ impl App {
             }
         }
     }
+}
+
+/// A modal's frame and a scroll area as high as the window minus `fixed_height`. The
+/// frame's right margin moves into the scroll area, which puts its scroll bar there.
+fn scrolling_modal(
+    ctx: &egui::Context,
+    fixed_height: f32,
+) -> (egui::Frame, egui::ScrollArea, egui::Margin) {
+    let mut frame = egui::Frame::popup(&ctx.global_style());
+    let scrollbar_margin = egui::Margin {
+        right: std::mem::take(&mut frame.inner_margin.right),
+        ..egui::Margin::ZERO
+    };
+    let scroll = egui::ScrollArea::vertical()
+        .max_height(ctx.content_rect().height() - fixed_height)
+        .content_margin(scrollbar_margin);
+    (frame, scroll, scrollbar_margin)
+}
+
+fn shortcuts_grid(ui: &mut egui::Ui) {
+    let grid = egui::Grid::new("shortcuts")
+        .num_columns(2)
+        .spacing([24.0, 6.0]);
+    grid.show(ui, |ui| {
+        for shortcut in SHORTCUTS {
+            let keys = actions::platform_keys(shortcut.keys);
+            ui.label(egui::RichText::new(keys).monospace().strong());
+            ui.label(shortcut.description);
+            ui.end_row();
+        }
+    });
 }
 
 /// Returns whether a slider is being dragged; the dialog applies its value on release.
