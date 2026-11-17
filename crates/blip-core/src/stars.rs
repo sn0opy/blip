@@ -152,7 +152,8 @@ fn overlapping(a: &Star, b: &Star) -> bool {
     d < 3.0 * (a.hfr + b.hfr)
 }
 
-/// Drop HFR outliers (unresolved doubles, galaxies): more than 4 MAD above the median.
+/// Drop HFR outliers (unresolved doubles, galaxies): more than 4 sigma above the median,
+/// with sigma estimated from the MAD.
 fn drop_hfr_outliers(stars: &mut Vec<Star>) {
     if stars.len() < 5 {
         return;

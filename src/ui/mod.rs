@@ -449,7 +449,6 @@ impl App {
         let mut files_changed = false;
         while let Some(msg) = self.loader.try_recv() {
             match msg {
-                // Ignore stale settings and files that are no longer listed.
                 Message::Image(path, settings, result)
                     if settings == self.settings(&path) && self.list.is_listed(&path) =>
                 {

@@ -660,7 +660,6 @@ fn clip_flash_on(ui: &egui::Ui) -> bool {
     phase < 0.5
 }
 
-/// The bundled fonts have no gear glyph.
 fn disclosure_triangle(side: f32, open: bool) -> egui::Atom<'static> {
     egui::Atom::paint(Vec2::splat(side), move |ui, args| {
         let pointing = if open {
@@ -707,6 +706,7 @@ fn list_icon(painter: &egui::Painter, rect: Rect, grouped: bool, color: Color32)
     }
 }
 
+/// The bundled fonts have no gear glyph.
 fn gear_button(ui: &mut egui::Ui) -> egui::Response {
     let side = ui.spacing().interact_size.y;
     let response = ui.add(egui::Button::new("").min_size(Vec2::splat(side)));

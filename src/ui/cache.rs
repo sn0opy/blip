@@ -6,11 +6,9 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Number of rendered images kept on the GPU (binned / full resolution without a memory
-/// budget).
-const CACHE_SIZE: usize = 10;
-const CACHE_SIZE_FULL: usize = 4;
-const MIN_CACHE: usize = 2;
+const CACHED_IMAGES: usize = 10;
+const CACHED_FULL_RES_WITHOUT_BUDGET: usize = 4;
+const MIN_CACHED_IMAGES: usize = 2;
 
 struct CacheEntry {
     loaded: Loaded,
@@ -148,13 +146,15 @@ impl ImageCache {
 
     /// Half the GPU memory budget; the rest is left to other processes and decoding.
     pub fn limit(&self, ahead: usize, behind: usize, full_res: bool) -> usize {
-        let wanted = CACHE_SIZE.max(1 + ahead + behind);
+        let wanted = CACHED_IMAGES.max(1 + ahead + behind);
         let fits = match self.memory_budget {
             Some(m) if self.image_bytes > 0 => {
                 let n = m.budget / 2 / self.image_bytes as u64;
-                usize::try_from(n).unwrap_or(usize::MAX).max(MIN_CACHE)
+                usize::try_from(n)
+                    .unwrap_or(usize::MAX)
+                    .max(MIN_CACHED_IMAGES)
             }
-            _ if full_res => CACHE_SIZE_FULL,
+            _ if full_res => CACHED_FULL_RES_WITHOUT_BUDGET,
             _ => wanted,
         };
         wanted.min(fits).min(self.memory_cap.unwrap_or(usize::MAX))
