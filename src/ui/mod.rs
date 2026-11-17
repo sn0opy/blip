@@ -37,6 +37,7 @@ use loader::{Binning, Loaded, Message, Settings};
 use prefs::{BinningPref, Preferences};
 use scan::{Listing, is_image, list_images};
 use std::any::Any;
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -126,6 +127,12 @@ impl ImageToggle {
 struct CacheEntry {
     loaded: Loaded,
     last_used: u64,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum EvictionOrder {
+    OutsideWindow { least_recently_used: u64 },
+    InWindow { lowest_priority: Reverse<usize> },
 }
 
 pub struct App {
@@ -341,6 +348,7 @@ impl App {
         self.errors.clear();
         self.stars.clear();
         self.shown = None;
+        self.stale = None;
         self.image_bytes = 0;
         self.memory_cap = None;
         self.files_changed();
@@ -646,9 +654,21 @@ impl App {
     fn eviction_victim(&self, drop_shown: bool) -> Option<PathBuf> {
         let current = self.current();
         let shown = self.shown.as_ref().filter(|_| !drop_shown);
+        let window: Vec<&PathBuf> = (self.prefetch_window().into_iter())
+            .map(|(_, p)| p)
+            .collect();
+        let eviction_order =
+            |path: &PathBuf, entry: &CacheEntry| match window.iter().position(|w| *w == path) {
+                Some(priority) => EvictionOrder::InWindow {
+                    lowest_priority: Reverse(priority),
+                },
+                None => EvictionOrder::OutsideWindow {
+                    least_recently_used: entry.last_used,
+                },
+            };
         (self.cache.iter())
             .filter(|(p, _)| Some(*p) != current && Some(*p) != shown)
-            .min_by_key(|(_, e)| e.last_used)
+            .min_by_key(|(p, e)| eviction_order(p, e))
             .map(|(p, _)| p.clone())
     }
 
