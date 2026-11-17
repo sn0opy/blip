@@ -196,6 +196,7 @@ pub struct App {
 
     export_tx: Sender<Result<String, String>>,
     export_rx: Receiver<Result<String, String>>,
+    disposal: Option<Receiver<rejects::Disposal>>,
 }
 
 /// What `App::settings` gives every image right after start.
@@ -324,6 +325,7 @@ impl App {
             title: String::new(),
             export_tx,
             export_rx,
+            disposal: None,
         };
         if let Some(path) = start {
             app.open(&path);
@@ -515,13 +517,12 @@ impl App {
         self.request_loads();
     }
 
-    /// Collect finished background work: folder listings, previews, star measurements,
-    /// exports.
     fn poll_background(&mut self) {
         if let Some(listing) = self.scanner.take() {
             self.apply_listing(listing);
         }
         self.poll_headers();
+        self.poll_disposal();
         let limit = self.cache_limit();
         let mut loaded_any = false;
         let mut files_changed = false;

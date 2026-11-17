@@ -8,8 +8,15 @@ use eframe::egui::{self, Vec2};
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{TryRecvError, channel};
 
 pub const REJECTED_FOLDER: &str = "_rejected";
+
+pub(super) struct Disposal {
+    handling: RejectHandling,
+    done: Vec<PathBuf>,
+    errors: Vec<String>,
+}
 
 impl App {
     pub(super) fn toggle_rejected(&mut self, path: &Path) {
@@ -21,42 +28,55 @@ impl App {
         self.set_status(format!("{verb} {}", file_name(path)), Some(2.5));
     }
 
-    pub(super) fn handle_rejected(&mut self) {
-        if self.list.rejected_count() == 0 {
+    fn disposing(&self) -> bool {
+        self.disposal.is_some()
+    }
+
+    pub(super) fn handle_rejected(&mut self, ctx: &egui::Context) {
+        if self.list.rejected_count() == 0 || self.disposing() {
             return;
         }
         match self.prefs.reject_handling {
             RejectHandling::Delete => self.confirm_delete = Some(Deletion::Rejected),
-            handling => self.dispose_rejected(handling),
+            handling => self.dispose_rejected(ctx, handling),
         }
     }
 
-    pub(super) fn dispose_rejected(&mut self, handling: RejectHandling) {
+    pub(super) fn dispose_rejected(&mut self, ctx: &egui::Context, handling: RejectHandling) {
         let Some(root) = self.list.dir().map(Path::to_path_buf) else {
             return;
         };
         let files = self.list.rejected();
-        let results = match handling {
-            RejectHandling::MoveToFolder => {
-                each_file(&files, |f| move_to_rejected_folder(&root, f))
-            }
-            RejectHandling::MoveToTrash => trash::move_to_trash(&files),
-            RejectHandling::Delete => each_file(&files, |f| std::fs::remove_file(f)),
+        self.set_status(disposing_message(handling, files.len()), None);
+        let (tx, rx) = channel();
+        self.disposal = Some(rx);
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(dispose(handling, &root, files));
+            ctx.request_repaint();
+        });
+    }
+
+    pub(super) fn poll_disposal(&mut self) {
+        let Some(rx) = &self.disposal else {
+            return;
         };
-        let mut done = Vec::new();
-        let mut errors = Vec::new();
-        for (file, result) in files.into_iter().zip(results) {
-            match result {
-                Ok(()) => done.push(file),
-                Err(e) => errors.push(e),
+        let disposal = match rx.try_recv() {
+            Ok(disposal) => disposal,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                self.disposal = None;
+                let text = "Handling the rejected files stopped unexpectedly".to_string();
+                return self.set_status(text, Some(8.0));
             }
-        }
-        self.forget(&done);
-        let message = disposed_message(handling, done.len());
-        match errors.first() {
+        };
+        self.disposal = None;
+        self.forget(&disposal.done);
+        let message = disposed_message(disposal.handling, disposal.done.len());
+        match disposal.errors.first() {
             None => self.set_status(message, Some(2.5)),
             Some(e) => {
-                let failed = format!("{message}, {} failed: {e}", errors.len());
+                let failed = format!("{message}, {} failed: {e}", disposal.errors.len());
                 self.set_status(failed, Some(8.0));
             }
         }
@@ -88,10 +108,41 @@ impl App {
             };
             let centered = (egui::Atom::grow(), label, egui::Atom::grow());
             let button = egui::Button::new(centered).min_size(Vec2::new(ui.available_width(), 0.0));
-            if actions::tooltip(ui.add(button), Action::HandleRejected).clicked() {
-                self.handle_rejected();
+            let button = ui.add_enabled(!self.disposing(), button);
+            if actions::tooltip(button, Action::HandleRejected).clicked() {
+                self.handle_rejected(ui.ctx());
             }
         });
+    }
+}
+
+fn dispose(handling: RejectHandling, root: &Path, files: Vec<PathBuf>) -> Disposal {
+    let results = match handling {
+        RejectHandling::MoveToFolder => each_file(&files, |f| move_to_rejected_folder(root, f)),
+        RejectHandling::MoveToTrash => trash::move_to_trash(&files),
+        RejectHandling::Delete => each_file(&files, |f| std::fs::remove_file(f)),
+    };
+    let mut done = Vec::new();
+    let mut errors = Vec::new();
+    for (file, result) in files.into_iter().zip(results) {
+        match result {
+            Ok(()) => done.push(file),
+            Err(e) => errors.push(e),
+        }
+    }
+    Disposal {
+        handling,
+        done,
+        errors,
+    }
+}
+
+fn disposing_message(handling: RejectHandling, files: usize) -> String {
+    let files = file_count(files);
+    match handling {
+        RejectHandling::MoveToFolder => format!("Moving {files} to {REJECTED_FOLDER}/…"),
+        RejectHandling::MoveToTrash => format!("Moving {files} to the trash…"),
+        RejectHandling::Delete => format!("Deleting {files}…"),
     }
 }
 

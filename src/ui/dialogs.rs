@@ -119,7 +119,7 @@ impl App {
             let deletion = self.confirm_delete.take();
             match deletion.filter(|_| confirmed) {
                 Some(Deletion::File(path)) => self.delete(&path),
-                Some(Deletion::Rejected) => self.dispose_rejected(RejectHandling::Delete),
+                Some(Deletion::Rejected) => self.dispose_rejected(ctx, RejectHandling::Delete),
                 None => {}
             }
         }

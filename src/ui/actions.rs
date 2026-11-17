@@ -401,7 +401,7 @@ impl App {
                     self.toggle_rejected(&path);
                 }
             }
-            HandleRejected => self.handle_rejected(),
+            HandleRejected => self.handle_rejected(ctx),
             // Zoom doesn't apply to the mosaic, as on the toolbar.
             ZoomFit | ZoomActual if self.mosaic => {}
             ZoomFit => self.zoom_to_fit(),
