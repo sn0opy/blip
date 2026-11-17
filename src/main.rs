@@ -25,7 +25,7 @@ impl Args {
             match a.to_str() {
                 Some("--backend") => args.backend = it.next().and_then(|v| v.into_string().ok()),
                 Some("--present") => args.present = it.next().and_then(|v| v.into_string().ok()),
-                _ => args.start = Some(PathBuf::from(a)),
+                _ => args.start = Some(std::path::absolute(&a).unwrap_or_else(|_| a.into())),
             }
         }
         args.present = args.present.or_else(|| std::env::var("BLIP_PRESENT").ok());
