@@ -117,6 +117,11 @@ pub struct Card {
 }
 
 impl Image {
+    pub fn plane(&self, p: usize) -> &[u16] {
+        let n = self.width * self.height;
+        &self.data[p * n..(p + 1) * n]
+    }
+
     pub fn get(&self, key: &str) -> Option<&str> {
         lookup(&self.header, key)
     }

@@ -92,6 +92,25 @@ pub(crate) fn sum_histograms(mut a: Vec<u32>, b: Vec<u32>) -> Vec<u32> {
     a
 }
 
+/// White balance gains that scale every channel's background median up to the brightest
+/// one. Channels with a zero median are left alone.
+pub(crate) fn neutralizing_gains(medians: &[f64]) -> Vec<f64> {
+    let max = medians.iter().copied().fold(0.0, f64::max);
+    medians
+        .iter()
+        .map(|&m| if m > 0.0 { max / m } else { 1.0 })
+        .collect()
+}
+
+/// Upper median (the element at `len / 2` in sorted order); 0 if empty.
+pub(crate) fn median(vals: &mut [f32]) -> f32 {
+    if vals.is_empty() {
+        return 0.0;
+    }
+    let mid = vals.len() / 2;
+    *vals.select_nth_unstable_by(mid, f32::total_cmp).1
+}
+
 /// Exact `k`-th smallest of `f(v)` over every `step`-th value, by radix select.
 pub(crate) fn select_nth(
     vals: &[f32],
@@ -160,6 +179,14 @@ mod tests {
             (3.0 / 65535.0, 1.0 / 65535.0)
         );
         assert_eq!(median_mad(&[0, 65535, 65535]), (1.0, 0.0));
+    }
+
+    #[test]
+    fn median_takes_the_upper_middle() {
+        assert_eq!(median(&mut []), 0.0);
+        assert_eq!(median(&mut [3.0]), 3.0);
+        assert_eq!(median(&mut [4.0, 1.0, 3.0, 2.0]), 3.0);
+        assert_eq!(median(&mut [5.0, -1.0, 2.0]), 2.0);
     }
 
     #[test]

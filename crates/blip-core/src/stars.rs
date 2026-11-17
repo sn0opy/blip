@@ -6,8 +6,11 @@
 
 use crate::image::Image;
 use crate::process::ClipStats;
-use crate::stats::{MAD_TO_SIGMA, hist_median, rgb_histograms, select_nth};
+use crate::stats::{
+    MAD_TO_SIGMA, hist_median, median, neutralizing_gains, rgb_histograms, select_nth,
+};
 use rayon::prelude::*;
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Star {
@@ -44,12 +47,12 @@ const APERTURE: f32 = 4.0;
 const MIN_RADIUS: f32 = 8.0;
 const MAX_RADIUS: f32 = 30.0;
 const MAX_POINTS: usize = 400;
+const PEAK_MARGIN: usize = 16;
 
 pub fn detect(img: &Image, clip: &ClipStats) -> StarStats {
-    const MARGIN: usize = 16;
     let (bw, bh) = (img.width / 2, img.height / 2);
     // No room for a peak away from the border (this also covers empty images).
-    if bw <= 2 * MARGIN || bh <= 2 * MARGIN {
+    if bw <= 2 * PEAK_MARGIN || bh <= 2 * PEAK_MARGIN {
         return StarStats::default();
     }
     let lum = Luminance::new(img);
@@ -62,39 +65,14 @@ pub fn detect(img: &Image, clip: &ClipStats) -> StarStats {
     // roughly 3 sigma of single-pixel noise.
     let max_local_bg = bg + 20.0 * sigma;
 
-    let mut peaks: Vec<(usize, usize, f32)> = (MARGIN..bh.saturating_sub(MARGIN))
-        .into_par_iter()
-        .flat_map_iter(|y| {
-            let smooth = &smooth;
-            (MARGIN..bw.saturating_sub(MARGIN)).filter_map(move |x| {
-                let v = smooth[y * bw + x];
-                if v <= threshold {
-                    return None;
-                }
-                for dy in -3isize..=3 {
-                    let row = (y as isize + dy) as usize * bw;
-                    for dx in -3isize..=3 {
-                        if (dx, dy) == (0, 0) {
-                            continue;
-                        }
-                        let n = smooth[row + (x as isize + dx) as usize];
-                        // Ties: keep only the first pixel of a flat top.
-                        if n > v || (n == v && (dy < 0 || (dy == 0 && dx < 0))) {
-                            return None;
-                        }
-                    }
-                }
-                Some((x, y, v))
-            })
-        })
-        .collect();
+    let mut peaks = find_peaks(&smooth, bw, threshold);
     // Brightest first, so blends are resolved in favor of the dominant star.
     peaks.sort_by(|a, b| b.2.total_cmp(&a.2));
     let points_brightest_first = bright_points(&smooth, bw, &peaks, threshold - bg);
 
-    let measured: Vec<Option<Star>> = peaks
+    let measured: Vec<Star> = peaks
         .par_iter()
-        .map(|&(bx, by, _)| {
+        .filter_map(|&(bx, by, _)| {
             measure(
                 img,
                 &lum,
@@ -105,54 +83,98 @@ pub fn detect(img: &Image, clip: &ClipStats) -> StarStats {
             )
         })
         .collect();
-
-    // Drop stars overlapping a brighter, already accepted star (blends / double peaks).
-    let mut stars: Vec<Star> = Vec::new();
-    let cell = 2.0 * MAX_RADIUS;
-    let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> = Default::default();
-    for star in measured.into_iter().flatten() {
-        let (gx, gy) = ((star.x / cell) as i32, (star.y / cell) as i32);
-        let overlaps = (-1..=1).any(|dy| {
-            (-1..=1).any(|dx| {
-                grid.get(&(gx + dx, gy + dy)).is_some_and(|ids| {
-                    ids.iter().any(|&i| {
-                        let o = &stars[i];
-                        let d = ((o.x - star.x).powi(2) + (o.y - star.y).powi(2)).sqrt();
-                        d < 3.0 * (o.hfr + star.hfr)
-                    })
-                })
-            })
-        });
-        if !overlaps {
-            grid.entry((gx, gy)).or_default().push(stars.len());
-            stars.push(star);
-        }
-    }
-
-    // Drop HFR outliers (unresolved doubles, galaxies): more than 4 MAD above the median.
-    let mut hfrs: Vec<f32> = stars.iter().map(|s| s.hfr).collect();
-    if hfrs.len() >= 5 {
-        hfrs.sort_by(f32::total_cmp);
-        let med = hfrs[hfrs.len() / 2];
-        let mut dev: Vec<f32> = hfrs.iter().map(|h| (h - med).abs()).collect();
-        dev.sort_by(f32::total_cmp);
-        let limit = med + 4.0 * MAD_TO_SIGMA as f32 * dev[dev.len() / 2];
-        stars.retain(|s| s.hfr <= limit);
-    }
-    let mut hfrs: Vec<f32> = stars.iter().map(|s| s.hfr).collect();
-    hfrs.sort_by(f32::total_cmp);
-    let mean_hfr = if hfrs.is_empty() {
-        0.0
-    } else {
-        hfrs.iter().sum::<f32>() / hfrs.len() as f32
-    };
-    let median_hfr = hfrs.get(hfrs.len() / 2).copied().unwrap_or(0.0);
+    let mut stars = drop_blends(measured);
+    drop_hfr_outliers(&mut stars);
+    let (mean_hfr, median_hfr) = hfr_summary(&stars);
     StarStats {
         stars,
         points_brightest_first,
         mean_hfr,
         median_hfr,
     }
+}
+
+/// (x, y, value) of the local maxima above `threshold`, away from the border.
+fn find_peaks(smooth: &[f32], bw: usize, threshold: f32) -> Vec<(usize, usize, f32)> {
+    let bh = smooth.len() / bw;
+    (PEAK_MARGIN..bh.saturating_sub(PEAK_MARGIN))
+        .into_par_iter()
+        .flat_map_iter(|y| {
+            (PEAK_MARGIN..bw.saturating_sub(PEAK_MARGIN)).filter_map(move |x| {
+                let v = smooth[y * bw + x];
+                (v > threshold && is_local_max(smooth, bw, x, y)).then_some((x, y, v))
+            })
+        })
+        .collect()
+}
+
+/// Whether (x, y) is the maximum of its 7x7 neighborhood.
+fn is_local_max(smooth: &[f32], bw: usize, x: usize, y: usize) -> bool {
+    let v = smooth[y * bw + x];
+    for dy in -3isize..=3 {
+        let row = (y as isize + dy) as usize * bw;
+        for dx in -3isize..=3 {
+            if (dx, dy) == (0, 0) {
+                continue;
+            }
+            let n = smooth[row + (x as isize + dx) as usize];
+            // Ties: keep only the first pixel of a flat top.
+            if n > v || (n == v && (dy < 0 || (dy == 0 && dx < 0))) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Drop stars overlapping a brighter, already accepted star (blends / double peaks).
+fn drop_blends(brightest_first: Vec<Star>) -> Vec<Star> {
+    let mut stars: Vec<Star> = Vec::new();
+    let cell = 2.0 * MAX_RADIUS;
+    let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+    for star in brightest_first {
+        let (gx, gy) = ((star.x / cell) as i32, (star.y / cell) as i32);
+        let overlaps = (-1..=1)
+            .flat_map(|dy| (-1..=1).map(move |dx| (gx + dx, gy + dy)))
+            .filter_map(|neighbor_cell| grid.get(&neighbor_cell))
+            .flatten()
+            .any(|&i| overlapping(&stars[i], &star));
+        if !overlaps {
+            grid.entry((gx, gy)).or_default().push(stars.len());
+            stars.push(star);
+        }
+    }
+    stars
+}
+
+fn overlapping(a: &Star, b: &Star) -> bool {
+    let d = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
+    d < 3.0 * (a.hfr + b.hfr)
+}
+
+/// Drop HFR outliers (unresolved doubles, galaxies): more than 4 MAD above the median.
+fn drop_hfr_outliers(stars: &mut Vec<Star>) {
+    if stars.len() < 5 {
+        return;
+    }
+    let mut hfrs: Vec<f32> = stars.iter().map(|s| s.hfr).collect();
+    let med = median(&mut hfrs);
+    let mut dev: Vec<f32> = hfrs.iter().map(|h| (h - med).abs()).collect();
+    let limit = med + 4.0 * MAD_TO_SIGMA as f32 * median(&mut dev);
+    stars.retain(|s| s.hfr <= limit);
+}
+
+/// Mean and median HFR; 0 without stars.
+fn hfr_summary(stars: &[Star]) -> (f32, f32) {
+    let mut hfrs: Vec<f32> = stars.iter().map(|s| s.hfr).collect();
+    hfrs.sort_by(f32::total_cmp);
+    let mean = if hfrs.is_empty() {
+        0.0
+    } else {
+        hfrs.iter().sum::<f32>() / hfrs.len() as f32
+    };
+    let median = hfrs.get(hfrs.len() / 2).copied().unwrap_or(0.0);
+    (mean, median)
 }
 
 /// Peaks that mostly sit on a raised local background (nebula knots, halos) are
@@ -175,11 +197,10 @@ fn bright_points(
         .take(MAX_PEAKS)
         .filter_map(|&(bx, by, peak)| {
             let (bx, by) = (bx as isize, by as isize);
-            let ring_fits = (ring_outer..bw as isize - ring_outer).contains(&bx)
-                && (ring_outer..bh as isize - ring_outer).contains(&by);
-            if !ring_fits {
-                return None;
-            }
+            debug_assert!(
+                (ring_outer..bw as isize - ring_outer).contains(&bx)
+                    && (ring_outer..bh as isize - ring_outer).contains(&by)
+            );
             let mut ring = Vec::with_capacity(160);
             for dy in -ring_outer..=ring_outer {
                 for dx in -ring_outer..=ring_outer {
@@ -189,8 +210,7 @@ fn bright_points(
                     }
                 }
             }
-            let mid = ring.len() / 2;
-            let local_background = *ring.select_nth_unstable_by(mid, f32::total_cmp).1;
+            let local_background = median(&mut ring);
             if peak - local_background < min_local_contrast.max(0.0) {
                 return None;
             }
@@ -248,10 +268,11 @@ impl<'a> Luminance<'a> {
                     }
                 }
             });
-            let medians: [f32; 3] =
-                std::array::from_fn(|c| hist_median(&hist[c << 16..(c + 1) << 16]) as f32);
-            let max = medians.iter().copied().fold(1.0, f32::max);
-            gains = medians.map(|m| if m > 0.0 { max / m } else { 1.0 });
+            let medians: Vec<f64> = (0..3)
+                .map(|c| hist_median(&hist[c << 16..(c + 1) << 16]) as f64)
+                .collect();
+            let neutralizing = neutralizing_gains(&medians);
+            gains = std::array::from_fn(|c| neutralizing[c] as f32);
         }
         Self { img, gains }
     }
@@ -295,8 +316,7 @@ impl<'a> Luminance<'a> {
         match (img.bayer, img.planes) {
             (Some(b), _) => img.data[i] as f32 * self.gains[b.channel(x, y)],
             (None, 3) => {
-                let n = img.width * img.height;
-                (img.data[i] as f32 + img.data[n + i] as f32 + img.data[2 * n + i] as f32) / 3.0
+                (img.plane(0)[i] as f32 + img.plane(1)[i] as f32 + img.plane(2)[i] as f32) / 3.0
             }
             _ => img.data[i] as f32,
         }
@@ -362,7 +382,7 @@ fn measure(
     for y in iy.saturating_sub(3)..=(iy + 3).min(img.height - 1) {
         for x in ix.saturating_sub(3)..=(ix + 3).min(img.width - 1) {
             for p in 0..img.planes {
-                if img.data[p * img.width * img.height + y * img.width + x] >= clip.bright_level {
+                if img.plane(p)[y * img.width + x] >= clip.bright_level {
                     return None;
                 }
             }
@@ -448,11 +468,7 @@ fn annulus_median(lum: &Luminance, cx: f32, cy: f32, r_in: f32, r_out: f32) -> f
             vals.push(lum.at(x, y));
         }
     });
-    if vals.is_empty() {
-        return 0.0;
-    }
-    let mid = vals.len() / 2;
-    *vals.select_nth_unstable_by(mid, f32::total_cmp).1
+    median(&mut vals)
 }
 
 /// Median and MAD-based sigma from a sparse sample (every 5th value).
@@ -501,6 +517,17 @@ mod tests {
             };
             assert_eq!(s, want, "({x}, {y})");
         }
+    }
+
+    #[test]
+    fn flat_top_peak_is_found_once() {
+        let bw = 2 * PEAK_MARGIN + 8;
+        let mut smooth = vec![0.0; bw * bw];
+        let top = PEAK_MARGIN + 4;
+        smooth[top * bw + top] = 5.0;
+        smooth[top * bw + top + 1] = 5.0;
+        smooth[(top + 1) * bw + top] = 3.0;
+        assert_eq!(find_peaks(&smooth, bw, 1.0), [(top, top, 5.0)]);
     }
 
     #[test]

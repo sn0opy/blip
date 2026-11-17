@@ -5,7 +5,7 @@
 //! cells. Full resolution uses bilinear interpolation.
 
 use crate::image::{Bayer, Image};
-use crate::stats::{MAD_TO_SIGMA, hist_median_mad, median_mad, rgb_histograms};
+use crate::stats::{MAD_TO_SIGMA, hist_median_mad, median_mad, neutralizing_gains, rgb_histograms};
 use rayon::prelude::*;
 
 /// Full-resolution stretch statistics are taken from about this many pixels per channel.
@@ -172,10 +172,7 @@ pub fn render_full<P: Pixel>(img: &Image, params: StretchParams) -> Rendered<P> 
     let (pixels, stretch) = match img.bayer {
         Some(bayer) => debayer_stretch(img, bayer, params),
         None => {
-            let n = img.width * img.height;
-            let planes: Vec<&[u16]> = (0..img.planes)
-                .map(|p| &img.data[p * n..(p + 1) * n])
-                .collect();
+            let planes: Vec<&[u16]> = (0..img.planes).map(|p| img.plane(p)).collect();
             stretch(&planes, params)
         }
     };
@@ -278,17 +275,12 @@ fn stretch_luts(stats: &[(f64, f64)], params: StretchParams) -> (Vec<Vec<u8>>, S
     // One linked stretch for all channels after an optional multiplicative background
     // neutralization. Channels are scaled *up* to the brightest median so saturated
     // star cores stay white instead of picking up a color cast.
-    let max_med = stats.iter().map(|s| s.0).fold(0.0, f64::max);
-    let gains: Vec<f64> = stats
-        .iter()
-        .map(|s| {
-            if params.neutralize && s.0 > 0.0 {
-                max_med / s.0
-            } else {
-                1.0
-            }
-        })
-        .collect();
+    let medians: Vec<f64> = stats.iter().map(|s| s.0).collect();
+    let gains = if params.neutralize {
+        neutralizing_gains(&medians)
+    } else {
+        vec![1.0; medians.len()]
+    };
     let (shadows, midtones) = if params.auto_stretch {
         let n = stats.len() as f64;
         let median = stats.iter().zip(&gains).map(|(s, g)| s.0 * g).sum::<f64>() / n;
@@ -308,7 +300,7 @@ fn stretch_luts(stats: &[(f64, f64)], params: StretchParams) -> (Vec<Vec<u8>>, S
         .map(|&g| stf_lut(shadows, midtones, g))
         .collect();
     let info = StretchInfo {
-        medians: stats.iter().map(|s| s.0).collect(),
+        medians,
         gains,
         shadows,
         midtones,
@@ -323,54 +315,45 @@ fn stretch_luts(stats: &[(f64, f64)], params: StretchParams) -> (Vec<Vec<u8>>, S
 /// least one pixel per axis (and may exceed `max_side`). Bayer images smaller than one
 /// 2x2 cell are interpolated at full resolution instead.
 pub fn bin_image(img: &Image, max_side: usize) -> (Vec<Vec<u16>>, usize, usize, usize) {
-    let (sw, sh) = (img.width, img.height);
-    let long = sw.max(sh);
     let max_side = max_side.max(1);
-    let src = &img.data;
+    match img.bayer {
+        None => bin_mono(img, max_side),
+        Some(bayer) => bin_bayer(img, bayer, max_side),
+    }
+}
 
-    let Some(bayer) = img.bayer else {
-        let f = long.div_ceil(max_side).min(sw.min(sh)).max(1);
-        let (w, h) = (sw / f, sh / f);
-        let plane_len = sw * sh;
-        let planes = (0..img.planes)
-            .map(|p| {
-                let src = &src[p * plane_len..(p + 1) * plane_len];
-                match f {
-                    1 => src.to_vec(),
-                    2 => bin_plane_by::<2>(src, sw, w, h),
-                    3 => bin_plane_by::<3>(src, sw, w, h),
-                    4 => bin_plane_by::<4>(src, sw, w, h),
-                    _ => bin_plane(src, sw, f, w, h),
-                }
-            })
-            .collect();
-        return (planes, w, h, f);
-    };
+fn bin_mono(img: &Image, max_side: usize) -> (Vec<Vec<u16>>, usize, usize, usize) {
+    let (sw, sh) = (img.width, img.height);
+    let f = sw.max(sh).div_ceil(max_side).min(sw.min(sh)).max(1);
+    let (w, h) = (sw / f, sh / f);
+    let planes = (0..img.planes)
+        .map(|p| {
+            let src = img.plane(p);
+            match f {
+                1 => src.to_vec(),
+                2 => bin_plane_by::<2>(src, sw, w, h),
+                3 => bin_plane_by::<3>(src, sw, w, h),
+                4 => bin_plane_by::<4>(src, sw, w, h),
+                _ => bin_plane(src, sw, f, w, h),
+            }
+        })
+        .collect();
+    (planes, w, h, f)
+}
 
+fn bin_bayer(img: &Image, bayer: Bayer, max_side: usize) -> (Vec<Vec<u16>>, usize, usize, usize) {
+    let (sw, sh) = (img.width, img.height);
     if sw < 2 || sh < 2 {
         return (debayer_planes(img, bayer), sw, sh, 1);
     }
+    let src = &img.data;
 
     // Even bin factor so each output pixel covers k x k whole Bayer cells.
+    let long = sw.max(sh);
     let k = (long / 2).div_ceil(max_side).min(sw / 2).min(sh / 2).max(1);
     let f = 2 * k;
     let (w, h) = (sw / f, sh / f);
-
-    // Offsets of the R, G, G and B samples within a 2x2 cell.
-    let mut offsets = [0usize; 4];
-    let mut next_green = 1;
-    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-        let slot = match bayer.channel(dx, dy) {
-            0 => 0,
-            2 => 3,
-            _ => {
-                next_green += 1;
-                next_green - 1
-            }
-        };
-        offsets[slot] = dy * sw + dx;
-    }
-    let [o_r, o_g1, o_g2, o_b] = offsets;
+    let [o_r, o_g1, o_g2, o_b] = bayer_cell_offsets(bayer, sw);
     let cells = (k * k) as u64;
 
     let mut planes: Vec<Vec<u16>> = (0..3).map(|_| vec![0u16; w * h]).collect();
@@ -409,6 +392,23 @@ pub fn bin_image(img: &Image, max_side: usize) -> (Vec<Vec<u16>>, usize, usize, 
             }
         });
     (planes, w, h, f)
+}
+
+fn bayer_cell_offsets(bayer: Bayer, row_len: usize) -> [usize; 4] {
+    let mut offsets = [0usize; 4];
+    let mut greens = 0;
+    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        let slot = match bayer.channel(dx, dy) {
+            0 => 0,
+            2 => 3,
+            _ => {
+                greens += 1;
+                greens
+            }
+        };
+        offsets[slot] = dy * row_len + dx;
+    }
+    offsets
 }
 
 /// Average `F`x`F` blocks of an `sw` wide plane into a `w`x`h` one. A fixed factor lets
@@ -626,44 +626,7 @@ pub fn clip_points(
     if stats.dark == 0 && stats.bright == 0 {
         return Vec::new();
     }
-    let sw = img.width;
-    let plane_len = img.width * img.height;
     let level = stats.bright_level;
-    let clipped = |v: u16| (v == 0) | (v >= level);
-    let row = |oy: usize| -> Vec<(u32, u32, u8)> {
-        let mut kinds: Option<Vec<u8>> = None;
-        for p in 0..img.planes {
-            let plane = &img.data[p * plane_len..(p + 1) * plane_len];
-            for sy in oy * bin..oy * bin + bin {
-                let line = &plane[sy * sw..sy * sw + w * bin];
-                // Most lines have no clipped pixel; a branch-free pass finds those quickly.
-                if !line.iter().fold(false, |any, &v| any | clipped(v)) {
-                    continue;
-                }
-                let kinds = kinds.get_or_insert_with(|| vec![0u8; w]);
-                for (sx, &v) in line.iter().enumerate() {
-                    let k = if v >= level {
-                        CLIP_BRIGHT
-                    } else if v == 0 {
-                        CLIP_DARK
-                    } else {
-                        continue;
-                    };
-                    let o = &mut kinds[sx / bin];
-                    *o = (*o).max(k);
-                }
-            }
-        }
-        let Some(kinds) = kinds else {
-            return Vec::new();
-        };
-        kinds
-            .iter()
-            .enumerate()
-            .filter(|(_, k)| **k != 0)
-            .map(|(x, &k)| (x as u32, oy as u32, k))
-            .collect()
-    };
     // Rows go in batches, in order, so collecting stops soon after `limit` points
     // instead of gathering every clipped pixel first.
     let batch = 32 * rayon::current_num_threads();
@@ -671,7 +634,7 @@ pub fn clip_points(
     for start in (0..h).step_by(batch) {
         let rows: Vec<_> = (start..(start + batch).min(h))
             .into_par_iter()
-            .map(row)
+            .map(|oy| clipped_in_row(img, level, bin, w, oy))
             .collect();
         points.extend(rows.into_iter().flatten());
         if points.len() >= limit {
@@ -680,6 +643,43 @@ pub fn clip_points(
     }
     points.truncate(limit);
     points
+}
+
+fn clipped_in_row(img: &Image, level: u16, bin: usize, w: usize, oy: usize) -> Vec<(u32, u32, u8)> {
+    let sw = img.width;
+    let clipped = |v: u16| (v == 0) | (v >= level);
+    let lines = (0..img.planes).flat_map(|p| {
+        let plane = img.plane(p);
+        (oy * bin..oy * bin + bin).map(move |sy| &plane[sy * sw..sy * sw + w * bin])
+    });
+    let mut kinds: Option<Vec<u8>> = None;
+    for line in lines {
+        // Most lines have no clipped pixel; a branch-free pass finds those quickly.
+        if !line.iter().fold(false, |any, &v| any | clipped(v)) {
+            continue;
+        }
+        let kinds = kinds.get_or_insert_with(|| vec![0u8; w]);
+        for (sx, &v) in line.iter().enumerate() {
+            let k = if v >= level {
+                CLIP_BRIGHT
+            } else if v == 0 {
+                CLIP_DARK
+            } else {
+                continue;
+            };
+            let o = &mut kinds[sx / bin];
+            *o = (*o).max(k);
+        }
+    }
+    let Some(kinds) = kinds else {
+        return Vec::new();
+    };
+    kinds
+        .iter()
+        .enumerate()
+        .filter(|(_, k)| **k != 0)
+        .map(|(x, &k)| (x as u32, oy as u32, k))
+        .collect()
 }
 
 /// u16 -> u8 lookup table: scale by `gain`, clip at `shadows`, apply the MTF.
@@ -865,6 +865,21 @@ mod tests {
         let (planes, w, h, f) = bin_image(&img, 1);
         assert_eq!((w, h, f), (1, 1, 1200));
         assert!(planes.iter().all(|p| p == &[65535]));
+    }
+
+    #[test]
+    fn clip_points_per_block_with_bright_winning() {
+        let img = image(4, 2, None, &[0, 100, 65535, 100, 100, 100, 100, 0]);
+        let clip = clip_stats(&img);
+        assert_eq!(
+            clip_points(&img, &clip, 1, 4, 2, 100),
+            [(0, 0, CLIP_DARK), (2, 0, CLIP_BRIGHT), (3, 1, CLIP_DARK)]
+        );
+        assert_eq!(
+            clip_points(&img, &clip, 2, 2, 1, 100),
+            [(0, 0, CLIP_DARK), (1, 0, CLIP_BRIGHT)]
+        );
+        assert_eq!(clip_points(&img, &clip, 1, 4, 2, 2).len(), 2);
     }
 
     #[test]

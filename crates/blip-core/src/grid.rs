@@ -2,6 +2,7 @@
 //! corners, edges and center (tilt, off-axis aberrations).
 
 use crate::stars::Star;
+use crate::stats::median;
 
 pub const SIDE: usize = 3;
 /// Fewer stars than this in a cell make its median too noisy to compare.
@@ -30,10 +31,7 @@ impl Grid {
         Self {
             cells: hfrs.map(|mut h| Cell {
                 stars: h.len(),
-                median_hfr: (h.len() >= MIN_STARS).then(|| {
-                    let mid = h.len() / 2;
-                    *h.select_nth_unstable_by(mid, f32::total_cmp).1
-                }),
+                median_hfr: (h.len() >= MIN_STARS).then(|| median(&mut h)),
             }),
         }
     }
