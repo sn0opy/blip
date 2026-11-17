@@ -195,6 +195,7 @@ impl App {
         scanner: Scanner,
     ) -> Self {
         cc.egui_ctx.set_theme(egui::Theme::Dark);
+        cc.egui_ctx.all_styles_mut(round_widgets);
         scanner.attach(cc.egui_ctx.clone());
         loader.attach(
             cc.egui_ctx.clone(),
@@ -700,6 +701,19 @@ fn subject_name(d: &Dso, separator: &str) -> String {
         d.label.to_string()
     } else {
         format!("{}{separator}{}", d.label, d.common_name)
+    }
+}
+
+fn round_widgets(style: &mut egui::Style) {
+    let widgets = &mut style.visuals.widgets;
+    for state in [
+        &mut widgets.noninteractive,
+        &mut widgets.inactive,
+        &mut widgets.hovered,
+        &mut widgets.active,
+        &mut widgets.open,
+    ] {
+        state.corner_radius = egui::CornerRadius::same(draw::CORNER_RADIUS);
     }
 }
 

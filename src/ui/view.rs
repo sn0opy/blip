@@ -14,7 +14,6 @@ const FLASH_PERIOD: f64 = 0.8;
 /// Space between the mosaic panels, in points.
 const MOSAIC_GAP: f32 = 3.0;
 const REJECTED_BORDER: f32 = 3.0;
-const FILTER_CORNER_RADIUS: u8 = 3;
 const NO_MATCHES: &str = "No images match the filter";
 const FILTER_TIP: &str =
     "Images whose path contains all words.\n-word leaves out, \"two words\" keeps the space.";
@@ -147,26 +146,15 @@ impl App {
             let size = Vec2::splat(ui.spacing().icon_width);
             edit = edit.suffix(egui::Atom::custom(clear_id, size));
         }
-        let output = ui.scope(|ui| {
-            let widgets = &mut ui.visuals_mut().widgets;
-            for w in [
-                &mut widgets.inactive,
-                &mut widgets.hovered,
-                &mut widgets.active,
-            ] {
-                w.corner_radius = egui::CornerRadius::same(FILTER_CORNER_RADIUS);
-            }
-            egui::CompletionPopup::new(filter_id())
-                .align(egui::RectAlign::BOTTOM_START)
-                .show(ui, edit, |query| {
-                    if header_search {
-                        suggestions(headers, query.word)
-                    } else {
-                        Vec::new()
-                    }
-                })
-        });
-        let output = output.inner;
+        let output = egui::CompletionPopup::new(filter_id())
+            .align(egui::RectAlign::BOTTOM_START)
+            .show(ui, edit, |query| {
+                if header_search {
+                    suggestions(headers, query.word)
+                } else {
+                    Vec::new()
+                }
+            });
         let clear_rect = output.text_edit.response.rect(clear_id);
         let tip = if header_search {
             format!("{FILTER_TIP}\nKEYWORD:value looks in the header.")

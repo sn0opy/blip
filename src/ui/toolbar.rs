@@ -123,7 +123,7 @@ impl App {
 fn bar(ui: &mut egui::Ui, layout: Layout, state: impl Fn(Action) -> State) -> Option<Action> {
     let (rect, _) = ui.allocate_exact_size(layout.size(), Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect, draw::PANEL_RADIUS, Color32::from_black_alpha(200));
+    painter.rect_filled(rect, draw::CORNER_RADIUS, Color32::from_black_alpha(200));
     let mut clicked = None;
     let mut x = rect.left() + layout.padding;
     for (g, group) in GROUPS.iter().enumerate() {
@@ -158,7 +158,7 @@ fn bar(ui: &mut egui::Ui, layout: Layout, state: impl Fn(Action) -> State) -> Op
                 clicked = Some(action);
             }
             let fill = button_fill(&response, button_state);
-            painter.rect_filled(button.shrink(layout.pixel), draw::PANEL_RADIUS, fill);
+            painter.rect_filled(button.shrink(layout.pixel), draw::CORNER_RADIUS, fill);
             let icon_rect = Rect::from_center_size(button.center(), Vec2::splat(ICON));
             let color = icon_color(action, &response, button_state);
             paint_icon(painter, icon_rect, action, color);

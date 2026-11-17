@@ -7,7 +7,7 @@ use blip_core::tilt::Tilt;
 use blip_core::wcs::Wcs;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
-pub const PANEL_RADIUS: f32 = 4.0;
+pub const CORNER_RADIUS: u8 = 3;
 /// Unreadable and rejected files.
 pub const RED: Color32 = Color32::from_rgb(225, 95, 95);
 const GREEN: Color32 = Color32::from_rgb(70, 230, 70);
@@ -238,7 +238,7 @@ pub fn text_box_aligned(
     let bg = Rect::from_min_size(pos, galley.size()).expand(5.0);
     painter.rect_filled(
         bg,
-        PANEL_RADIUS,
+        CORNER_RADIUS,
         Color32::from_black_alpha((160.0 * alpha) as u8),
     );
     painter.galley(pos, galley, Color32::WHITE);
