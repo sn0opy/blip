@@ -163,6 +163,7 @@ fn folder_settings(ui: &mut egui::Ui, prefs: &mut Preferences) -> bool {
         label,
     );
     hint(ui, "How many folders deep to search for images.");
+    ui.checkbox(&mut prefs.group_by_folder, "Group images by folder");
     dragging
 }
 

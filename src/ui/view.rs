@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 const FLASH_PERIOD: f64 = 0.8;
 /// Space between the mosaic panels, in points.
 const MOSAIC_GAP: f32 = 3.0;
+const FILTER_CORNER_RADIUS: u8 = 3;
+const FILTER_TIP: &str =
+    "Images whose path contains all words.\n-word leaves out, \"two words\" keeps the space.";
 
 impl App {
     pub(super) fn file_list(&mut self, ui: &mut egui::Ui) {
@@ -19,7 +22,8 @@ impl App {
             if actions::tooltip(ui.button("Open…"), Action::Open).clicked() {
                 self.pick_folder();
             }
-            let export = ui.add_enabled(!self.files.is_empty(), egui::Button::new("Export…"));
+            let has_files = !self.list.files().is_empty();
+            let export = ui.add_enabled(has_files, egui::Button::new("Export…"));
             if actions::tooltip(export, Action::Export).clicked() {
                 self.export_current(ui.ctx());
             }
@@ -31,33 +35,37 @@ impl App {
                 self.show_settings = true;
             }
         });
-        let label = self
-            .dir
-            .as_ref()
+        let label = (self.list.dir())
             .map(|d| d.display().to_string())
             .unwrap_or_else(|| "No folder".into());
         ui.add(egui::Label::new(egui::RichText::new(label).weak()).truncate());
+        ui.horizontal(|ui| {
+            let side = ui.spacing().interact_size.y;
+            let width = ui.available_width() - side - ui.spacing().item_spacing.x;
+            self.filter_field(ui, width.max(0.0));
+            self.grouping_button(ui, side);
+        });
         ui.separator();
 
-        if self.scroll_to_selected
-            && let Some(current) = self.files.get(self.selected)
-        {
-            self.tree.reveal(current);
+        let scroll_to_selected = self.list.take_scroll_to_selected();
+        let rows = self.list.tree().visible_rows();
+        if rows.is_empty() && self.list.has_images() {
+            ui.weak("No images match the filter.");
         }
-        let rows = self.tree.visible_rows();
         let row_h = ui.spacing().interact_size.y;
         let spacing = ui.spacing().item_spacing.y;
         let scroll_salt = "file_list_scroll";
         let mut area = egui::ScrollArea::both()
             .auto_shrink([false, false])
             .id_salt(scroll_salt);
-        if self.scroll_to_selected {
-            let id = ui.make_persistent_id(egui::IdSalt::new(scroll_salt));
-            let offset =
-                egui::scroll_area::State::load(ui.ctx(), id).map_or(0.0, |s| s.clamped_offset().y);
+        let id = ui.make_persistent_id(egui::IdSalt::new(scroll_salt));
+        let offset =
+            egui::scroll_area::State::load(ui.ctx(), id).map_or(0.0, |s| s.clamped_offset().y);
+        if scroll_to_selected {
             let view_h = ui.available_height();
+            let selected = self.list.selected();
             let selected_row = (rows.iter())
-                .position(|row| matches!(row, Row::Image { index, .. } if *index == self.selected))
+                .position(|row| matches!(row, Row::Image { index, .. } if *index == selected))
                 .unwrap_or(0);
             let top = selected_row as f32 * (row_h + spacing);
             if top < offset {
@@ -65,7 +73,6 @@ impl App {
             } else if top + row_h > offset + view_h {
                 area = area.vertical_scroll_offset(top + row_h - view_h + spacing);
             }
-            self.scroll_to_selected = false;
         }
         let mut clicked = None;
         let mut menu_file = None;
@@ -81,7 +88,7 @@ impl App {
                     clicked = Some((*row).clone());
                 }
                 if let Row::Image { index, .. } = row {
-                    let path = &self.files[*index];
+                    let path = &self.list.files()[*index];
                     response.context_menu(|ui| {
                         menu_action = self.file_menu(ui, path);
                         menu_file = Some(path.clone());
@@ -92,8 +99,88 @@ impl App {
         self.handle_file_menu(ui.ctx(), menu_file, menu_action);
         match clicked {
             Some(Row::Image { index, .. }) => self.select(index),
-            Some(Row::Folder { path, .. }) => self.tree.toggle(&path),
+            Some(Row::Folder { path, .. }) => self.list.toggle_folder(&path),
             None => {}
+        }
+    }
+
+    /// Selects the text, so typing replaces it.
+    pub(super) fn focus_filter(&self, ctx: &egui::Context) {
+        let id = filter_id();
+        ctx.memory_mut(|m| m.request_focus(id));
+        let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+        let all = egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(self.list.filter().chars().count()),
+        );
+        state.cursor.set_char_range(Some(all));
+        egui::TextEdit::store_state(ctx, id, state);
+    }
+
+    fn filter_field(&mut self, ui: &mut egui::Ui, width: f32) {
+        let clear_id = egui::IdSalt::new("clear_filter");
+        let filter = self.list.filter_editor();
+        let filtering = !filter.is_empty();
+        let mut edit = egui::TextEdit::singleline(filter)
+            .hint_text(format!("Filter ({})", actions::key_hint(Action::Filter)))
+            .desired_width(width);
+        if filtering {
+            let size = Vec2::splat(ui.spacing().icon_width);
+            edit = edit.suffix(egui::Atom::custom(clear_id, size));
+        }
+        let output = ui.scope(|ui| {
+            let widgets = &mut ui.visuals_mut().widgets;
+            for w in [
+                &mut widgets.inactive,
+                &mut widgets.hovered,
+                &mut widgets.active,
+            ] {
+                w.corner_radius = egui::CornerRadius::same(FILTER_CORNER_RADIUS);
+            }
+            edit.id(filter_id()).show(ui)
+        });
+        let output = output.inner;
+        let clear_rect = output.response.rect(clear_id);
+        let response = output.response.response.on_hover_text(FILTER_TIP);
+        let mut changed = response.changed();
+        if let Some(rect) = clear_rect {
+            let rect = Rect::from_x_y_ranges(rect.x_range(), response.rect.y_range());
+            let clear = ui.place(rect, egui::Button::new("").frame(false));
+            let color = ui.style().interact(&clear).fg_stroke.color;
+            clear_icon(ui.painter(), clear.rect, color);
+            let clear = clear.on_hover_cursor(egui::CursorIcon::PointingHand);
+            if clear.on_hover_text("Clear filter").clicked() {
+                self.list.filter_editor().clear();
+                changed = true;
+            }
+        }
+        if changed {
+            self.list.filter_changed();
+            self.files_changed();
+        }
+    }
+
+    fn grouping_button(&mut self, ui: &mut egui::Ui, side: f32) {
+        let has_folders = self.prefs.subfolder_depth > 0;
+        let button = egui::Button::new("").min_size(Vec2::splat(side));
+        let response = ui.add_enabled(has_folders, button);
+        let color = ui.style().interact(&response).fg_stroke.color;
+        list_icon(
+            ui.painter(),
+            response.rect,
+            self.list.grouped() && has_folders,
+            color,
+        );
+        let tip = if self.list.grouped() {
+            "Grouped by folder; click for a flat list"
+        } else {
+            "Flat list; click to group by folder"
+        };
+        let response = response
+            .on_hover_text(tip)
+            .on_disabled_hover_text("Only the opened folder is listed (see Settings)");
+        if response.clicked() {
+            self.list.set_grouped(!self.list.grouped());
         }
     }
 
@@ -106,19 +193,19 @@ impl App {
                 let mut atoms = egui::Atoms::new((file_name(path), egui::Atom::grow()));
                 atoms.push_left(disclosure_triangle(
                     triangle_side,
-                    !self.tree.is_collapsed(path),
+                    !self.list.tree().is_collapsed(path),
                 ));
                 (atoms, false)
             }
             Row::Image { index, .. } => {
-                let path = &self.files[*index];
+                let path = &self.list.files()[*index];
                 let mut text = egui::RichText::new(file_name(path));
                 if self.errors.contains_key(path) {
                     text = text.color(Color32::from_rgb(220, 90, 90));
                 }
                 (
                     egui::Atoms::new((text, egui::Atom::grow())),
-                    *index == self.selected,
+                    *index == self.list.selected(),
                 )
             }
         };
@@ -245,9 +332,11 @@ impl App {
                 draw::text_box_aligned(&painter, debug_pos, egui::Align2::RIGHT_TOP, &text, 1.0);
                 debug_drawn = true;
             }
-        } else if self.files.is_empty() {
+        } else if self.list.files().is_empty() {
             let text = if self.scanner.busy() {
                 "Reading folder…".to_string()
+            } else if self.list.has_images() {
+                "No images match the filter".to_string()
             } else {
                 let key = actions::key_hint(Action::Open);
                 format!("Open a folder ({key}) or drop a folder / FITS / XISF file here")
@@ -463,6 +552,29 @@ fn disclosure_triangle(side: f32, open: bool) -> egui::Atom<'static> {
         let triangle = egui::Shape::rotated_triangle(rect, pointing, args.fallback_text_color);
         ui.painter().add(triangle);
     })
+}
+
+fn filter_id() -> egui::Id {
+    egui::Id::unique("file_filter")
+}
+
+fn clear_icon(painter: &egui::Painter, rect: Rect, color: Color32) {
+    let (center, r) = (rect.center(), rect.width() * 0.3);
+    let stroke = egui::Stroke::new(1.5, color);
+    for corner in [Vec2::new(r, r), Vec2::new(r, -r)] {
+        painter.line_segment([center - corner, center + corner], stroke);
+    }
+}
+
+fn list_icon(painter: &egui::Painter, rect: Rect, grouped: bool, color: Color32) {
+    let (center, r) = (rect.center(), rect.height() * 0.3);
+    let stroke = egui::Stroke::new(1.5, color);
+    for (i, y) in [-0.7, 0.0, 0.7].into_iter().enumerate() {
+        let indent = if grouped && i > 0 { 0.7 } else { 0.0 };
+        let y = center.y + y * r;
+        let left = center.x - r + indent * r;
+        painter.line_segment([Pos2::new(left, y), Pos2::new(center.x + r, y)], stroke);
+    }
 }
 
 fn gear_button(ui: &mut egui::Ui) -> egui::Response {

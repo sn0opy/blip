@@ -34,8 +34,13 @@ impl FolderTree {
     }
 
     /// The images of each folder must be listed together, as `list_images` does.
-    pub fn rebuild(&mut self, images: &[PathBuf]) {
+    pub fn rebuild(&mut self, images: &[PathBuf], grouped: bool) {
         self.rows.clear();
+        if !grouped {
+            let images = (0..images.len()).map(|index| Row::Image { index, depth: 0 });
+            self.rows.extend(images);
+            return;
+        }
         let mut previous_folders: Vec<&Path> = Vec::new();
         for (index, image) in images.iter().enumerate() {
             let folders = self.folders_between_root_and(image);
@@ -99,7 +104,7 @@ mod tests {
     fn tree(images: &[&str]) -> (FolderTree, Vec<PathBuf>) {
         let images: Vec<PathBuf> = images.iter().map(PathBuf::from).collect();
         let mut tree = FolderTree::new(Path::new("/root"));
-        tree.rebuild(&images);
+        tree.rebuild(&images, true);
         (tree, images)
     }
 
@@ -133,6 +138,15 @@ mod tests {
             image(3, 1),
             image(4, 0),
         ];
+        assert_eq!(tree.visible_rows(), expected.iter().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_flat_tree_lists_only_images_even_in_collapsed_folders() {
+        let (mut tree, images) = tree(&["/root/a/1.fits", "/root/2.fits"]);
+        tree.toggle(Path::new("/root/a"));
+        tree.rebuild(&images, false);
+        let expected = [image(0, 0), image(1, 0)];
         assert_eq!(tree.visible_rows(), expected.iter().collect::<Vec<_>>());
     }
 

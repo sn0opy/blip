@@ -4,8 +4,10 @@
 mod actions;
 mod dialogs;
 mod draw;
+mod filter;
 mod gpu;
 mod header;
+mod list;
 mod loader;
 mod menu;
 mod prefs;
@@ -25,6 +27,7 @@ use blip_core::solve::Solution;
 use blip_core::stars::StarStats;
 use blip_core::tilt::Tilt;
 use eframe::egui::{self, Vec2};
+use list::FileList;
 use loader::{Binning, Loaded, Message, Settings};
 use prefs::{BinningPref, Preferences};
 use scan::{Listing, is_image, list_images};
@@ -34,7 +37,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
-use tree::FolderTree;
 
 pub const APP_ID: &str = "sh.sascha.blip";
 /// Previews are binned so their long side is at most this many pixels.
@@ -116,12 +118,9 @@ struct CacheEntry {
 pub struct App {
     loader: Loader,
     scanner: Scanner,
-    dir: Option<PathBuf>,
     /// Last folder of a previous session; only the Open dialog's start location.
     last_dir: Option<PathBuf>,
-    files: Vec<PathBuf>,
-    tree: FolderTree,
-    selected: usize,
+    list: FileList,
     /// Direction of the last navigation step, used to prefetch ahead.
     direction: isize,
     cache: HashMap<PathBuf, CacheEntry>,
@@ -171,7 +170,6 @@ pub struct App {
     header_sort: Option<header::Sort>,
     /// The settings dialog's values while a slider is dragged, applied on release.
     prefs_draft: Option<Preferences>,
-    scroll_to_selected: bool,
     status: Option<Status>,
     title: String,
 
@@ -248,14 +246,11 @@ impl App {
         let mut app = Self {
             loader,
             scanner,
-            dir: None,
             last_dir: cc
                 .storage
                 .and_then(|s| s.get_string("last_dir"))
                 .map(PathBuf::from),
-            files: Vec::new(),
-            tree: FolderTree::default(),
-            selected: 0,
+            list: FileList::new(&prefs),
             direction: 1,
             cache: HashMap::new(),
             errors: HashMap::new(),
@@ -300,7 +295,6 @@ impl App {
             show_header: false,
             header_sort: None,
             prefs_draft: None,
-            scroll_to_selected: false,
             status: None,
             title: String::new(),
             export_tx,
@@ -313,7 +307,7 @@ impl App {
     }
 
     fn current(&self) -> Option<&PathBuf> {
-        self.files.get(self.selected)
+        self.list.current()
     }
 
     /// Open a folder, or a file (shown right away, then selected in its folder's listing).
@@ -324,11 +318,7 @@ impl App {
             let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
             (dir, Some(path.to_path_buf()))
         };
-        self.tree = FolderTree::new(&dir);
-        self.dir = Some(dir);
-        self.files = file.into_iter().filter(|f| is_image(f)).collect();
-        self.tree.rebuild(&self.files);
-        self.selected = 0;
+        self.list.open(dir, file.filter(|f| is_image(f)));
         self.direction = 1;
         self.cache.clear();
         self.errors.clear();
@@ -336,22 +326,23 @@ impl App {
         self.shown = None;
         self.image_bytes = 0;
         self.memory_cap = None;
-        self.request_loads();
+        self.files_changed();
         self.refresh();
     }
 
     fn refresh(&mut self) {
-        if let Some(dir) = &self.dir {
+        if let Some(dir) = self.list.dir() {
             self.scanner.scan(dir, self.prefs.subfolder_depth);
         }
     }
 
     fn apply_listing(&mut self, listing: Listing) {
-        if self.dir.as_ref() != Some(&listing.dir) || listing.depth != self.prefs.subfolder_depth {
+        if self.list.dir() != Some(listing.dir.as_path())
+            || listing.depth != self.prefs.subfolder_depth
+        {
             return;
         }
-        let current = self.current().cloned();
-        self.files = match listing.files {
+        let files = match listing.files {
             Ok(files) => {
                 if self
                     .status
@@ -367,41 +358,43 @@ impl App {
                 Vec::new()
             }
         };
-        self.tree.rebuild(&self.files);
-        self.selected = current
-            .and_then(|c| self.files.iter().position(|p| *p == c))
-            .unwrap_or(0);
-        self.scroll_to_selected = true;
+        self.list.set_listing(files);
+        self.files_changed();
+    }
+
+    fn files_changed(&mut self) {
+        if self.list.files().is_empty() {
+            self.shown = None;
+        }
         self.request_loads();
     }
 
     fn select(&mut self, index: usize) {
-        if self.files.is_empty() {
+        if self.list.files().is_empty() {
             return;
         }
-        let index = index.min(self.files.len() - 1);
-        if index != self.selected {
-            self.direction = if index > self.selected { 1 } else { -1 };
+        let old = self.list.selected();
+        let index = self.list.select(index);
+        if index != old {
+            self.direction = if index > old { 1 } else { -1 };
         }
-        self.selected = index;
-        self.scroll_to_selected = true;
         self.request_loads();
     }
 
     fn step(&mut self, delta: isize) {
-        if self.files.is_empty() {
+        let Some(last) = self.list.files().len().checked_sub(1) else {
             return;
-        }
-        let i = (self.selected as isize + delta).clamp(0, self.files.len() as isize - 1);
+        };
+        let i = (self.list.selected() as isize + delta).clamp(0, last as isize);
         self.select(i as usize);
     }
 
     /// The current image, then its neighbors (mostly ahead), with their offsets from the
     /// current one.
     fn prefetch_window(&self) -> Vec<(isize, &PathBuf)> {
-        let s = self.selected as isize;
+        let (files, s) = (self.list.files(), self.list.selected() as isize);
         prefetch_offsets(self.direction, self.prefs.ahead, self.prefs.behind)
-            .filter_map(|o| Some((o, self.files.get(usize::try_from(s + o).ok()?)?)))
+            .filter_map(|o| Some((o, files.get(usize::try_from(s + o).ok()?)?)))
             .take(self.cache_limit())
             .collect()
     }
@@ -489,7 +482,7 @@ impl App {
             match msg {
                 // Ignore stale settings and files that are no longer listed.
                 Message::Image(path, settings, result)
-                    if settings == self.settings(&path) && self.files.contains(&path) =>
+                    if settings == self.settings(&path) && self.list.is_listed(&path) =>
                 {
                     loaded_any = true;
                     match result {
@@ -506,11 +499,11 @@ impl App {
                     }
                 }
                 Message::OutOfMemory(path, settings)
-                    if settings == self.settings(&path) && self.files.contains(&path) =>
+                    if settings == self.settings(&path) && self.list.is_listed(&path) =>
                 {
                     self.out_of_memory(path);
                 }
-                Message::Stars(path, measured) if self.files.contains(&path) => {
+                Message::Stars(path, measured) if self.list.is_listed(&path) => {
                     self.stars.insert(path, *measured);
                 }
                 _ => {}
@@ -571,6 +564,7 @@ impl App {
         if prefs.binning != old.binning {
             self.full_res = false;
         }
+        self.list.apply_prefs(&prefs, &old);
         if prefs.subfolder_depth != old.subfolder_depth {
             self.refresh();
         }
@@ -651,15 +645,8 @@ impl App {
         if self.shown.as_deref() == Some(path) {
             self.shown = None;
         }
-        if let Some(i) = self.files.iter().position(|p| p == path) {
-            self.files.remove(i);
-            self.tree.rebuild(&self.files);
-            if self.selected > i || self.selected >= self.files.len() {
-                self.selected = self.selected.saturating_sub(1);
-            }
-        }
+        self.list.remove(path);
         self.set_status(format!("Deleted {}", file_name(path)), Some(2.5));
-        self.scroll_to_selected = true;
         self.request_loads();
     }
 
@@ -673,7 +660,7 @@ impl App {
 
     fn pick_folder(&mut self) {
         let mut dialog = rfd::FileDialog::new();
-        if let Some(dir) = self.dir.as_ref().or(self.last_dir.as_ref()) {
+        if let Some(dir) = self.list.dir().or(self.last_dir.as_deref()) {
             dialog = dialog.set_directory(dir);
         }
         if let Some(dir) = dialog.pick_folder() {
@@ -725,8 +712,8 @@ impl App {
             Some(p) => format!(
                 "blip · {} · {}/{}",
                 file_name(p),
-                self.selected + 1,
-                self.files.len()
+                self.list.selected() + 1,
+                self.list.files().len()
             ),
             None => "blip".into(),
         };
@@ -774,7 +761,7 @@ impl eframe::App for App {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.prefs.save(storage);
-        if let Some(dir) = &self.dir {
+        if let Some(dir) = self.list.dir() {
             storage.set_string("last_dir", dir.display().to_string());
         }
     }

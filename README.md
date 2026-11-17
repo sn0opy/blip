@@ -44,6 +44,7 @@ cargo build --release
 | <kbd>H</kbd> | Show all header entries |
 | <kbd>D</kbd> | Toggle debug info (timings, stretch, cache, GPU) |
 | <kbd>E</kbd> or <kbd>Ctrl</kbd>+<kbd>S</kbd> | Export as PNG / JPEG at full resolution |
+| <kbd>Ctrl</kbd>+<kbd>F</kbd> | Filter files by name or folder |
 | <kbd>O</kbd> or <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open folder |
 | <kbd>F5</kbd> or <kbd>Ctrl</kbd>+<kbd>R</kbd> | Rescan folder |
 | <kbd>Ctrl</kbd>+<kbd>,</kbd> | Open settings |

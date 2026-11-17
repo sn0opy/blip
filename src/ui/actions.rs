@@ -26,6 +26,7 @@ pub enum Action {
     Header,
     Debug,
     Export,
+    Filter,
     Open,
     Rescan,
     Settings,
@@ -207,6 +208,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
         &[key(Key::E, Export), cmd(Key::S, Export)],
     ),
     row(
+        "Ctrl+F",
+        "Filter files by name or folder",
+        &[cmd(Key::F, Filter)],
+    ),
+    row(
         "O, Ctrl+O",
         "Open folder",
         &[key(Key::O, Open), cmd(Key::O, Open)],
@@ -345,7 +351,11 @@ impl App {
     /// Runs each pressed action once, even if several of its keys came in this frame.
     /// Opening the help or the settings drops the frame's other keys.
     pub(super) fn handle_keys(&mut self, ctx: &egui::Context) {
-        if self.confirm_delete.is_some() || self.show_help || self.show_settings || self.show_header
+        if self.confirm_delete.is_some()
+            || self.show_help
+            || self.show_settings
+            || self.show_header
+            || ctx.text_edit_focused()
         {
             return;
         }
@@ -388,6 +398,7 @@ impl App {
             }
             Debug => self.show_debug = !self.show_debug,
             Export => self.export_current(ctx),
+            Filter => self.focus_filter(ctx),
             Open => self.pick_folder(),
             Rescan => self.refresh(),
             Settings => self.show_settings = true,

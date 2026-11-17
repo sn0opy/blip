@@ -83,6 +83,7 @@ impl SubjectOrder {
 pub struct Preferences {
     /// 0 lists only the opened folder's images.
     pub subfolder_depth: usize,
+    pub group_by_folder: bool,
     pub binning: BinningPref,
     /// Counted in the browsing direction.
     pub ahead: usize,
@@ -105,6 +106,7 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             subfolder_depth: 0,
+            group_by_folder: true,
             binning: BinningPref::Auto,
             ahead: 3,
             behind: 1,
@@ -190,8 +192,9 @@ impl Preferences {
         }
     }
 
-    fn flags(&mut self) -> [(&'static str, &mut bool); 10] {
+    fn flags(&mut self) -> [(&'static str, &mut bool); 11] {
         [
+            ("group_by_folder", &mut self.group_by_folder),
             ("show_info", &mut self.show_info),
             ("show_debug", &mut self.show_debug),
             ("actual_size", &mut self.actual_size),
@@ -238,6 +241,7 @@ mod tests {
     fn saved_preferences_load_back() {
         let prefs = Preferences {
             subfolder_depth: MAX_SUBFOLDER_DEPTH,
+            group_by_folder: false,
             binning: BinningPref::Bin3,
             ahead: MAX_PREFETCH,
             behind: 0,

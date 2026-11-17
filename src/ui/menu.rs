@@ -42,7 +42,7 @@ impl App {
             Some(MenuAction::Status(text)) => self.set_status(text, Some(2.5)),
             Some(MenuAction::Export(path)) => self.export(ctx, path),
             Some(MenuAction::Header(path)) => {
-                if let Some(i) = self.files.iter().position(|p| *p == path) {
+                if let Some(i) = self.list.files().iter().position(|p| *p == path) {
                     self.select(i);
                     self.open_header();
                 }

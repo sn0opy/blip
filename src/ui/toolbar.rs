@@ -99,8 +99,8 @@ impl App {
         let on = |t: &ImageToggle| current.is_some_and(|p| t.is_on(p));
         let zoomable = has_image && !self.mosaic;
         let (enabled, active) = match action {
-            Step(d) if d < 0 => (self.selected > 0, false),
-            Step(_) => (self.selected + 1 < self.files.len(), false),
+            Step(d) if d < 0 => (self.list.selected() > 0, false),
+            Step(_) => (self.list.selected() + 1 < self.list.files().len(), false),
             ZoomFit => (zoomable, self.is_fitted()),
             ZoomActual => (zoomable, self.actual_size),
             AutoStretch => (has_image, on(&self.auto_stretch)),
