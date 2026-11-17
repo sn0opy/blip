@@ -44,9 +44,13 @@ pub fn zone_starts() -> Vec<usize> {
     starts
 }
 
+fn zone_of(dec: f64) -> usize {
+    ((dec + 90.0).floor().max(0.0) as usize).min(ZONES - 1)
+}
+
 /// (zone, RA index)
 pub fn cell_of(ra: f64, dec: f64) -> (usize, usize) {
-    let zone = ((dec + 90.0).floor().max(0.0) as usize).min(ZONES - 1);
+    let zone = zone_of(dec);
     let n = cells_in_zone(zone);
     let i = ((ra.rem_euclid(360.0) / 360.0 * n as f64) as usize).min(n - 1);
     (zone, i)
@@ -129,7 +133,6 @@ impl Catalog {
 
     pub fn cone(&self, ra: f64, dec: f64, radius: f64) -> Vec<CatStar> {
         let mut out = Vec::new();
-        let zone_of = |dec: f64| ((dec + 90.0).floor().max(0.0) as usize).min(ZONES - 1);
         let dec_nearest_pole = (dec.abs() + radius).min(90.0);
         let ra_half_width = if dec_nearest_pole >= 89.999 {
             180.0

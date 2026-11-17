@@ -142,8 +142,8 @@ pub fn solve(
     // Ring by ring across all pointings, so a wrong RA / DEC doesn't delay a right
     // OBJCTRA / OBJCTDEC.
     for ring in 0..=rings {
+        let offsets = square_ring(ring);
         for &(ra0, dec0) in &hint.pointings {
-            let offsets = square_ring(ring);
             tiles_tried += offsets.len();
             let best = offsets
                 .par_iter()
@@ -154,21 +154,24 @@ pub fn solve(
                 })
                 .max_by_key(|m| m.matches);
             if let Some(m) = best {
-                let mut solution = refine(
+                let fit = refine(
                     tiles.catalog,
                     &centered,
-                    cx,
-                    cy,
+                    (cx, cy),
                     deg_per_px,
                     half_diagonal,
                     m,
                 )?;
-                let (ra, dec) = solution.wcs.pixel_to_sky(cx, cy);
-                solution.size = [width, height];
-                solution.hint_offset_deg = wcs::separation(ra0, dec0, ra, dec);
-                solution.tiles_tried = tiles_tried;
-                solution.ms = started.elapsed().as_secs_f64() * 1000.0;
-                return Ok(solution);
+                let (ra, dec) = fit.wcs.pixel_to_sky(cx, cy);
+                return Ok(Solution {
+                    wcs: fit.wcs,
+                    size: [width, height],
+                    matched_stars: fit.matched_stars,
+                    rms_arcsec: fit.rms_arcsec,
+                    hint_offset_deg: wcs::separation(ra0, dec0, ra, dec),
+                    tiles_tried,
+                    ms: started.elapsed().as_secs_f64() * 1000.0,
+                });
             }
         }
     }
@@ -218,25 +221,10 @@ impl Tiles<'_> {
         let mut best: Option<(usize, Affine)> = None;
         for sky in nearest_neighbor_triangles(brightest, self.min_triangle_deg) {
             for k in self.index.candidates(sky.side_ratios) {
-                let image = &self.image_triangles[k as usize];
-                if !image.same_shape(&sky) {
-                    continue;
-                }
-                let scale = sky.longest_side / image.longest_side / self.deg_per_px;
-                if (scale - 1.0).abs() > SCALE_TOLERANCE {
-                    continue;
-                }
-                let Some(transform) = Affine::least_squares(&[0, 1, 2].map(|v| {
-                    (
-                        self.pattern[image.vertices_by_opposite_side[v]],
-                        brightest[sky.vertices_by_opposite_side[v]],
-                    )
-                })) else {
+                let image = &self.image_triangles[k];
+                let Some(transform) = self.similarity(image, &sky, brightest) else {
                     continue;
                 };
-                if !transform.is_similarity(self.deg_per_px) {
-                    continue;
-                }
                 let matches = self
                     .pattern
                     .iter()
@@ -259,6 +247,38 @@ impl Tiles<'_> {
             matches,
         })
     }
+
+    /// The pixel → tangent plane transform taking `image` onto `sky`, if the two
+    /// triangles agree in shape and scale.
+    fn similarity(
+        &self,
+        image: &Triangle,
+        sky: &Triangle,
+        sky_points: &[[f64; 2]],
+    ) -> Option<Affine> {
+        if !image.same_shape(sky) {
+            return None;
+        }
+        let scale = sky.longest_side / image.longest_side / self.deg_per_px;
+        if (scale - 1.0).abs() > SCALE_TOLERANCE {
+            return None;
+        }
+        let transform = Affine::least_squares(&[0, 1, 2].map(|v| {
+            (
+                self.pattern[image.vertices_by_opposite_side[v]],
+                sky_points[sky.vertices_by_opposite_side[v]],
+            )
+        }))?;
+        transform
+            .is_similarity(self.deg_per_px)
+            .then_some(transform)
+    }
+}
+
+struct Fit {
+    wcs: Wcs,
+    matched_stars: usize,
+    rms_arcsec: f64,
 }
 
 /// Least-squares fits over all points near a catalog star, with a shrinking match
@@ -266,12 +286,11 @@ impl Tiles<'_> {
 fn refine(
     catalog: &Catalog,
     points: &[[f64; 2]],
-    cx: f64,
-    cy: f64,
+    (cx, cy): (f64, f64),
     deg_per_px: f64,
     half_diagonal: f64,
     m: TileMatch,
-) -> Result<Solution, String> {
+) -> Result<Fit, String> {
     let (mut ra0, mut dec0) = m.tangent_point;
     let mut transform = m.pixel_to_tangent;
     let mut stars: Vec<CatStar> = Vec::new();
@@ -316,18 +335,14 @@ fn refine(
     }
     let (matched_stars, rms_arcsec) = fit.ok_or("no fit")?;
     let [px, py] = transform.preimage_of_origin().ok_or("degenerate fit")?;
-    Ok(Solution {
+    Ok(Fit {
         wcs: Wcs {
             crval: [ra0, dec0],
             crpix: [cx + px, cy + py],
             cd: transform.linear,
         },
-        size: [0, 0],
         matched_stars,
         rms_arcsec,
-        hint_offset_deg: 0.0,
-        tiles_tried: 0,
-        ms: 0.0,
     })
 }
 
@@ -478,17 +493,12 @@ impl ShapeIndex {
         Self(bins)
     }
 
-    fn candidates(&self, side_ratios: [f64; 2]) -> Vec<u32> {
+    fn candidates(&self, side_ratios: [f64; 2]) -> impl Iterator<Item = usize> {
         let (bx, by) = Self::bin(side_ratios);
-        let mut out = Vec::new();
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                if let Some(v) = self.0.get(&(bx + dx, by + dy)) {
-                    out.extend_from_slice(v);
-                }
-            }
-        }
-        out
+        (-1..=1)
+            .flat_map(move |dx| (-1..=1).filter_map(move |dy| self.0.get(&(bx + dx, by + dy))))
+            .flatten()
+            .map(|&i| i as usize)
     }
 }
 
