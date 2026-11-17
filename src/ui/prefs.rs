@@ -84,6 +84,8 @@ pub struct Preferences {
     /// 0 lists only the opened folder's images.
     pub subfolder_depth: usize,
     pub group_by_folder: bool,
+    pub header_search: bool,
+    pub scan_headers: bool,
     pub binning: BinningPref,
     /// Counted in the browsing direction.
     pub ahead: usize,
@@ -107,6 +109,8 @@ impl Default for Preferences {
         Self {
             subfolder_depth: 0,
             group_by_folder: true,
+            header_search: false,
+            scan_headers: false,
             binning: BinningPref::Auto,
             ahead: 3,
             behind: 1,
@@ -192,9 +196,11 @@ impl Preferences {
         }
     }
 
-    fn flags(&mut self) -> [(&'static str, &mut bool); 11] {
+    fn flags(&mut self) -> [(&'static str, &mut bool); 13] {
         [
             ("group_by_folder", &mut self.group_by_folder),
+            ("header_search", &mut self.header_search),
+            ("scan_headers", &mut self.scan_headers),
             ("show_info", &mut self.show_info),
             ("show_debug", &mut self.show_debug),
             ("actual_size", &mut self.actual_size),
@@ -242,6 +248,8 @@ mod tests {
         let prefs = Preferences {
             subfolder_depth: MAX_SUBFOLDER_DEPTH,
             group_by_folder: false,
+            header_search: true,
+            scan_headers: true,
             binning: BinningPref::Bin3,
             ahead: MAX_PREFETCH,
             behind: 0,

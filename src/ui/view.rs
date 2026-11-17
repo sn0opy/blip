@@ -1,5 +1,6 @@
 use super::actions::{self, Action};
 use super::gpu::MemoryBudget;
+use super::headers::HeaderIndex;
 use super::loader::Work;
 use super::tree::Row;
 use super::{App, CacheEntry, MeasuredStars, STATUS_FADE, draw, file_name};
@@ -48,6 +49,7 @@ impl App {
         ui.separator();
 
         let scroll_to_selected = self.list.take_scroll_to_selected();
+        let scroll_rows = self.list.take_scroll_rows();
         let rows = self.list.tree().visible_rows();
         if rows.is_empty() && self.list.has_images() {
             ui.weak("No images match the filter.");
@@ -61,6 +63,10 @@ impl App {
         let id = ui.make_persistent_id(egui::IdSalt::new(scroll_salt));
         let offset =
             egui::scroll_area::State::load(ui.ctx(), id).map_or(0.0, |s| s.clamped_offset().y);
+        if scroll_rows != 0 {
+            let shifted = offset + scroll_rows as f32 * (row_h + spacing);
+            area = area.vertical_scroll_offset(shifted.max(0.0));
+        }
         if scroll_to_selected {
             let view_h = ui.available_height();
             let selected = self.list.selected();
@@ -77,7 +83,9 @@ impl App {
         let mut clicked = None;
         let mut menu_file = None;
         let mut menu_action = None;
+        let mut top = None;
         area.show_rows(ui, row_h, rows.len(), |ui, range| {
+            top = (rows.get(range.start)).map(|row| self.list.row_path(row).to_path_buf());
             for row in &rows[range] {
                 let button = self
                     .tree_row_button(ui, row)
@@ -96,6 +104,7 @@ impl App {
                 }
             }
         });
+        self.list.set_top_row(top);
         self.handle_file_menu(ui.ctx(), menu_file, menu_action);
         match clicked {
             Some(Row::Image { index, .. }) => self.select(index),
@@ -119,7 +128,8 @@ impl App {
 
     fn filter_field(&mut self, ui: &mut egui::Ui, width: f32) {
         let clear_id = egui::IdSalt::new("clear_filter");
-        let filter = self.list.filter_editor();
+        let header_search = self.list.header_search();
+        let (filter, headers) = self.list.filter_editor();
         let filtering = !filter.is_empty();
         let mut edit = egui::TextEdit::singleline(filter)
             .hint_text(format!("Filter ({})", actions::key_hint(Action::Filter)))
@@ -137,12 +147,25 @@ impl App {
             ] {
                 w.corner_radius = egui::CornerRadius::same(FILTER_CORNER_RADIUS);
             }
-            edit.id(filter_id()).show(ui)
+            egui::CompletionPopup::new(filter_id())
+                .align(egui::RectAlign::BOTTOM_START)
+                .show(ui, edit, |query| {
+                    if header_search {
+                        suggestions(headers, query.word)
+                    } else {
+                        Vec::new()
+                    }
+                })
         });
         let output = output.inner;
-        let clear_rect = output.response.rect(clear_id);
-        let response = output.response.response.on_hover_text(FILTER_TIP);
-        let mut changed = response.changed();
+        let clear_rect = output.text_edit.response.rect(clear_id);
+        let tip = if header_search {
+            format!("{FILTER_TIP}\nKEYWORD:value looks in the header.")
+        } else {
+            FILTER_TIP.to_string()
+        };
+        let response = output.text_edit.response.response.on_hover_text(tip);
+        let mut changed = response.changed() || output.accepted.is_some();
         if let Some(rect) = clear_rect {
             let rect = Rect::from_x_y_ranges(rect.x_range(), response.rect.y_range());
             let clear = ui.place(rect, egui::Button::new("").frame(false));
@@ -150,7 +173,7 @@ impl App {
             clear_icon(ui.painter(), clear.rect, color);
             let clear = clear.on_hover_cursor(egui::CursorIcon::PointingHand);
             if clear.on_hover_text("Clear filter").clicked() {
-                self.list.filter_editor().clear();
+                self.list.filter_editor().0.clear();
                 changed = true;
             }
         }
@@ -433,11 +456,12 @@ impl App {
         let prefetch = format!("+{} · -{}", states_on_side(true), states_on_side(false));
         let mut lines = vec![
             format!(
-                "cache {}/{} images · {} MB on GPU · {} star measurements",
+                "cache {}/{} images · {} MB on GPU · {} star measurements · {} headers",
                 self.cache.len(),
                 self.cache_limit(),
                 gpu_bytes / (1 << 20),
                 self.stars.len(),
+                self.list.header_count(),
             ),
             match self.memory_budget {
                 Some(m) => format!("GPU {} · memory: {}", self.gpu_info, memory(m)),
@@ -552,6 +576,16 @@ fn disclosure_triangle(side: f32, open: bool) -> egui::Atom<'static> {
         let triangle = egui::Shape::rotated_triangle(rect, pointing, args.fallback_text_color);
         ui.painter().add(triangle);
     })
+}
+
+fn suggestions(headers: &mut HeaderIndex, word: &str) -> Vec<egui::Suggestion> {
+    (headers.complete(word).iter())
+        .map(|c| {
+            egui::Suggestion::new(c.insert.clone())
+                .content(c.label.clone())
+                .description(c.file_count.to_string())
+        })
+        .collect()
 }
 
 fn filter_id() -> egui::Id {

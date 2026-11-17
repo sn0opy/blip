@@ -1,6 +1,9 @@
 //! The file list's filter: space-separated terms that must all appear in an image's path
 //! below the opened folder, ignoring case. `-term` excludes, and quotes keep spaces.
+//! With header search, `KEYWORD:value` terms look for the value in that header entry.
 
+use super::headers::HeaderIndex;
+use blip_core::image::Header;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Default, PartialEq)]
@@ -22,12 +25,13 @@ impl ListedImage {
 
 #[derive(Debug, PartialEq)]
 struct Term {
+    key: Option<String>,
     text: String,
     excluded: bool,
 }
 
 impl Filter {
-    pub fn parse(query: &str) -> Self {
+    pub fn parse(query: &str, header_search: bool) -> Self {
         let mut terms = Vec::new();
         let mut chars = query.chars().peekable();
         loop {
@@ -36,35 +40,63 @@ impl Filter {
                 break;
             }
             let excluded = chars.next_if_eq(&'-').is_some();
+            let mut key = None;
             let mut text = String::new();
             let mut quoted = false;
             while let Some(c) = chars.next_if(|c| quoted || !c.is_whitespace()) {
                 match c {
                     '"' => quoted = !quoted,
+                    ':' if header_search && !quoted && key.is_none() && !text.is_empty() => {
+                        key = Some(std::mem::take(&mut text));
+                    }
                     c => text.push(c),
                 }
             }
-            if !text.is_empty() {
+            if !text.is_empty() || key.is_some() {
                 let text = text.to_lowercase();
-                terms.push(Term { text, excluded });
+                terms.push(Term {
+                    key,
+                    text,
+                    excluded,
+                });
             }
         }
         Self { terms }
     }
 
-    fn matches(&self, search_path: &str) -> bool {
-        (self.terms.iter()).all(|t| search_path.contains(&t.text) != t.excluded)
+    pub fn needs_headers(&self) -> bool {
+        self.terms.iter().any(|t| t.key.is_some())
+    }
+
+    fn matches(&self, search_path: &str, header: Option<&Header>) -> bool {
+        self.terms.iter().all(|t| {
+            let found = match (&t.key, header) {
+                (None, _) => search_path.contains(&t.text),
+                (Some(_), None) => return false,
+                (Some(key), Some(header)) => (header.iter()).any(|(k, v)| {
+                    k.eq_ignore_ascii_case(key) && v.to_lowercase().contains(&t.text)
+                }),
+            };
+            found != t.excluded
+        })
     }
 
     /// Also returns the index of `anchor`, or of the next match if it is filtered out.
-    pub fn apply(&self, listed: &[ListedImage], anchor: Option<&Path>) -> (Vec<PathBuf>, usize) {
+    pub fn apply(
+        &self,
+        listed: &[ListedImage],
+        anchor: Option<&Path>,
+        headers: &HeaderIndex,
+    ) -> (Vec<PathBuf>, usize) {
+        let needs_headers = self.needs_headers();
         let mut files = Vec::new();
         let mut selected = None;
         for image in listed {
             if Some(image.path.as_path()) == anchor {
                 selected = Some(files.len());
             }
-            if self.matches(&image.search_path) {
+            let header = needs_headers.then(|| headers.get(&image.path)).flatten();
+            if self.matches(&image.search_path, header) {
                 files.push(image.path.clone());
             }
         }
@@ -85,13 +117,21 @@ mod tests {
 
     fn term(text: &str, excluded: bool) -> Term {
         Term {
+            key: None,
             text: text.into(),
             excluded,
         }
     }
 
+    fn header_term(key: &str, text: &str, excluded: bool) -> Term {
+        Term {
+            key: Some(key.into()),
+            ..term(text, excluded)
+        }
+    }
+
     fn paths(filter: &str) -> Filter {
-        Filter::parse(filter)
+        Filter::parse(filter, false)
     }
 
     #[test]
@@ -124,9 +164,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_header_terms_only_with_header_search() {
+        let query = r#"Filter:Ha -object:"M 31" imagetyp: "a:b" :x light"#;
+        let parsed = Filter::parse(query, true);
+        let expected = [
+            header_term("Filter", "ha", false),
+            header_term("object", "m 31", true),
+            header_term("imagetyp", "", false),
+            term("a:b", false),
+            term(":x", false),
+            term("light", false),
+        ];
+        assert_eq!(parsed.terms, expected);
+        assert!(parsed.needs_headers());
+        assert!(!paths(query).needs_headers());
+        assert_eq!(paths("filter:ha").terms, [term("filter:ha", false)]);
+    }
+
+    #[test]
     fn every_term_must_match_folders_too() {
         let filter = paths("light -flat");
-        let matches = |path: &str| filter.matches(&search_path(Path::new(path), Path::new("")));
+        let matches =
+            |path: &str| filter.matches(&search_path(Path::new(path), Path::new("")), None);
         assert!(matches("2026-11-17/LIGHT_Ha_001.fits"));
         assert!(matches("lights/m31_001.fits"));
         assert!(!matches("lights/flat_001.fits"));
@@ -135,12 +194,28 @@ mod tests {
     }
 
     #[test]
+    fn header_terms_look_into_the_keyword_only() {
+        let header: Header = [("FILTER", "Ha"), ("OBJECT", "M 31"), ("IMAGETYP", "LIGHT")]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .into();
+        let matches = |query: &str| Filter::parse(query, true).matches("1.fits", Some(&header));
+        assert!(matches("filter:ha object:31 imagetyp:"));
+        assert!(matches("-filter:oiii -bayerpat:"));
+        assert!(!matches("filter:oiii"));
+        assert!(!matches("object:ha"));
+        assert!(!matches("bayerpat:"));
+        assert!(!matches("-imagetyp:light"));
+        let unknown = Filter::parse("-filter:oiii", true);
+        assert!(!unknown.matches("1.fits", None));
+    }
+
+    #[test]
     fn matches_paths_below_the_root() {
         let root = Path::new("/data/M31");
         let path = search_path(&root.join("Lights").join("1.fits"), root);
         assert_eq!(path, "lights/1.fits");
-        assert!(paths("LIGHTS/").matches(&path));
-        assert!(!paths("m31").matches(&path));
+        assert!(paths("LIGHTS/").matches(&path, None));
+        assert!(!paths("m31").matches(&path, None));
     }
 
     fn listing(paths: &[&str]) -> Vec<ListedImage> {
@@ -152,17 +227,36 @@ mod tests {
     #[test]
     fn keeps_the_anchor_or_moves_to_the_next_match() {
         let listed = listing(&["/r/a1", "/r/b1", "/r/a2", "/r/b2"]);
+        let headers = HeaderIndex::default();
         let a = paths("a");
         let at = |filter: &Filter, anchor: &str| {
             let anchor = Some(Path::new(anchor));
-            let (files, selected) = filter.apply(&listed, anchor);
+            let (files, selected) = filter.apply(&listed, anchor, &headers);
             (files[selected].clone(), files.len())
         };
         assert_eq!(at(&a, "/r/a2"), (PathBuf::from("/r/a2"), 2));
         assert_eq!(at(&a, "/r/b1"), (PathBuf::from("/r/a2"), 2));
         assert_eq!(at(&a, "/r/b2"), (PathBuf::from("/r/a2"), 2));
         assert_eq!(at(&Filter::default(), "/r/b2"), (PathBuf::from("/r/b2"), 4));
-        assert_eq!(a.apply(&listed, None).1, 0);
-        assert_eq!(paths("x").apply(&listed, None), (Vec::new(), 0));
+        assert_eq!(a.apply(&listed, None, &headers).1, 0);
+        assert_eq!(paths("x").apply(&listed, None, &headers), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn header_terms_skip_files_whose_header_is_unknown() {
+        let listed = listing(&["/r/1", "/r/2", "/r/3"]);
+        let path = |i: usize| listed[i].path.clone();
+        let mut headers = HeaderIndex::default();
+        let ha = vec![("FILTER".to_string(), "Ha".to_string())];
+        headers.insert_scanned(path(2), Some(ha));
+        headers.insert_scanned(path(1), Some(Header::new()));
+        let filter = Filter::parse("filter:ha", true);
+        let anchor = Some(listed[0].path.as_path());
+        assert_eq!(filter.apply(&listed, anchor, &headers), (vec![path(2)], 0));
+        let unknown = Filter::parse("-filter:oiii", true);
+        assert_eq!(
+            unknown.apply(&listed, anchor, &headers).0,
+            [path(1), path(2)]
+        );
     }
 }

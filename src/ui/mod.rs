@@ -7,6 +7,7 @@ mod draw;
 mod filter;
 mod gpu;
 mod header;
+mod headers;
 mod list;
 mod loader;
 mod menu;
@@ -27,6 +28,7 @@ use blip_core::solve::Solution;
 use blip_core::stars::StarStats;
 use blip_core::tilt::Tilt;
 use eframe::egui::{self, Vec2};
+use headers::{HeaderScanner, Progress};
 use list::FileList;
 use loader::{Binning, Loaded, Message, Settings};
 use prefs::{BinningPref, Preferences};
@@ -36,7 +38,7 @@ use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub const APP_ID: &str = "sh.sascha.blip";
 /// Previews are binned so their long side is at most this many pixels.
@@ -50,9 +52,17 @@ const STATUS_FADE: f32 = 0.8;
 
 /// A message in the bottom-left corner. Transient ones fade out after `ttl` seconds.
 struct Status {
+    kind: StatusKind,
     text: String,
     since: Instant,
     ttl: Option<f32>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum StatusKind {
+    Message,
+    FolderError,
+    ReadingHeaders,
 }
 
 pub struct MeasuredStars {
@@ -243,6 +253,9 @@ impl App {
         let prefs = Preferences::load(cc.storage);
         let (export_tx, export_rx) = channel();
         let gpu_memory = cc.wgpu_render_state.as_ref().map(gpu::MemoryQuery::new);
+        let activity = loader.activity();
+        let header_scanner =
+            HeaderScanner::new(Some(cc.egui_ctx.clone()), move || activity.wait_for_image());
         let mut app = Self {
             loader,
             scanner,
@@ -250,7 +263,7 @@ impl App {
                 .storage
                 .and_then(|s| s.get_string("last_dir"))
                 .map(PathBuf::from),
-            list: FileList::new(&prefs),
+            list: FileList::new(header_scanner, &prefs),
             direction: 1,
             cache: HashMap::new(),
             errors: HashMap::new(),
@@ -319,6 +332,7 @@ impl App {
             (dir, Some(path.to_path_buf()))
         };
         self.list.open(dir, file.filter(|f| is_image(f)));
+        self.clear_status(StatusKind::ReadingHeaders);
         self.direction = 1;
         self.cache.clear();
         self.errors.clear();
@@ -344,17 +358,12 @@ impl App {
         }
         let files = match listing.files {
             Ok(files) => {
-                if self
-                    .status
-                    .as_ref()
-                    .is_some_and(|st| st.text.starts_with("Cannot read folder"))
-                {
-                    self.status = None;
-                }
+                self.clear_status(StatusKind::FolderError);
                 files
             }
             Err(e) => {
-                self.set_status(format!("Cannot read folder: {e}"), None);
+                let text = format!("Cannot read folder: {e}");
+                self.show_status(StatusKind::FolderError, text, None);
                 Vec::new()
             }
         };
@@ -367,6 +376,29 @@ impl App {
             self.shown = None;
         }
         self.request_loads();
+    }
+
+    fn poll_headers(&mut self) {
+        if !self.list.scanning() {
+            self.clear_status(StatusKind::ReadingHeaders);
+        }
+        let Some((progress, changed)) = self.list.poll_headers() else {
+            return;
+        };
+        match progress {
+            Progress::Reading { done, total } => {
+                let text = format!("Reading headers {done}/{total}");
+                self.show_status(StatusKind::ReadingHeaders, text, None);
+            }
+            Progress::Finished {
+                done,
+                failed,
+                elapsed,
+            } => self.set_status(headers_read(done, failed, elapsed), Some(4.0)),
+        }
+        if changed {
+            self.files_changed();
+        }
     }
 
     fn select(&mut self, index: usize) {
@@ -476,8 +508,10 @@ impl App {
         if let Some(listing) = self.scanner.take() {
             self.apply_listing(listing);
         }
+        self.poll_headers();
         let limit = self.cache_limit();
         let mut loaded_any = false;
+        let mut files_changed = false;
         while let Some(msg) = self.loader.try_recv() {
             match msg {
                 // Ignore stale settings and files that are no longer listed.
@@ -489,7 +523,9 @@ impl App {
                         Ok(loaded) => {
                             self.tick += 1;
                             let last_used = self.tick;
-                            let loaded = *loaded;
+                            let mut loaded = *loaded;
+                            let header = std::mem::take(&mut loaded.header);
+                            files_changed |= self.list.add_loaded_header(path.clone(), header);
                             self.image_bytes = self.image_bytes.max(loaded.gpu_bytes());
                             self.cache.insert(path, CacheEntry { loaded, last_used });
                         }
@@ -508,6 +544,9 @@ impl App {
                 }
                 _ => {}
             }
+        }
+        if files_changed {
+            self.files_changed();
         }
         if loaded_any {
             self.memory_budget = self.gpu_memory.as_ref().and_then(gpu::MemoryQuery::budget);
@@ -564,7 +603,9 @@ impl App {
         if prefs.binning != old.binning {
             self.full_res = false;
         }
-        self.list.apply_prefs(&prefs, &old);
+        if self.list.apply_prefs(&prefs, &old) {
+            self.files_changed();
+        }
         if prefs.subfolder_depth != old.subfolder_depth {
             self.refresh();
         }
@@ -651,11 +692,22 @@ impl App {
     }
 
     fn set_status(&mut self, text: String, ttl: Option<f32>) {
+        self.show_status(StatusKind::Message, text, ttl);
+    }
+
+    fn show_status(&mut self, kind: StatusKind, text: String, ttl: Option<f32>) {
         self.status = Some(Status {
+            kind,
             text,
             since: Instant::now(),
             ttl,
         });
+    }
+
+    fn clear_status(&mut self, kind: StatusKind) {
+        if self.status.as_ref().is_some_and(|s| s.kind == kind) {
+            self.status = None;
+        }
     }
 
     fn pick_folder(&mut self) {
@@ -765,6 +817,20 @@ impl eframe::App for App {
             storage.set_string("last_dir", dir.display().to_string());
         }
     }
+}
+
+fn headers_read(done: usize, failed: usize, elapsed: Duration) -> String {
+    let elapsed = if elapsed < Duration::from_secs(1) {
+        format!("{} ms", elapsed.as_millis())
+    } else {
+        format!("{:.1} s", elapsed.as_secs_f64())
+    };
+    let s = if done == 1 { "" } else { "s" };
+    let mut text = format!("Read {done} header{s} in {elapsed}");
+    if failed > 0 {
+        text += &format!(", {failed} unreadable");
+    }
+    text
 }
 
 fn file_name(path: &Path) -> String {

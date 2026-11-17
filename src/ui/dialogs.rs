@@ -164,6 +164,15 @@ fn folder_settings(ui: &mut egui::Ui, prefs: &mut Preferences) -> bool {
     );
     hint(ui, "How many folders deep to search for images.");
     ui.checkbox(&mut prefs.group_by_folder, "Group images by folder");
+    ui.checkbox(
+        &mut prefs.header_search,
+        "Filter by header with KEYWORD:value",
+    );
+    let scan = egui::Checkbox::new(
+        &mut prefs.scan_headers,
+        "Read all headers when opening a folder",
+    );
+    ui.add_enabled(prefs.header_search, scan);
     dragging
 }
 

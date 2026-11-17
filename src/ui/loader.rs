@@ -77,6 +77,7 @@ pub struct Loaded {
     pub stretch: process::StretchInfo,
     pub bayer: Option<image::Bayer>,
     pub cards: Vec<image::Card>,
+    pub header: image::Header,
 }
 
 impl Loaded {
@@ -300,6 +301,10 @@ impl Loader {
         (self.shared.gpu.get()).map(|g| g.uploader.max_texture_side())
     }
 
+    pub fn activity(&self) -> Activity {
+        Activity(self.shared.clone())
+    }
+
     pub fn preloader(&self) -> Preloader {
         Preloader(self.shared.clone())
     }
@@ -316,6 +321,20 @@ impl Loader {
             queued_stars: q.stars.len() + usize::from(q.urgent_stars.is_some()),
             raw_images: q.raw.len(),
             raw_bytes: q.raw.iter().map(|r| size_of_val(&r.img.data[..])).sum(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Activity(Arc<Shared>);
+
+impl Activity {
+    pub fn wait_for_image(&self) {
+        let mut q = self.0.lock();
+        while (q.waiting_for.as_ref())
+            .is_some_and(|j| q.images.contains(j) || q.running_images().any(|r| r == j))
+        {
+            q = self.0.wake.wait(q).unwrap();
         }
     }
 }
@@ -556,6 +575,7 @@ fn load(
         stretch: r.stretch,
         bayer: img.bayer,
         cards: img.cards.clone(),
+        header: img.header.clone(),
     };
     let raw = Raw {
         path: path.to_path_buf(),
