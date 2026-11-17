@@ -1,6 +1,6 @@
 use super::actions::{self, Action, SHORTCUTS, with_key};
 use super::prefs::{
-    BinningPref, MAX_PREFETCH, MAX_SUBFOLDER_DEPTH, Preferences, RejectHandling, SubjectOrder,
+    BinningPref, Choice, MAX_PREFETCH, MAX_SUBFOLDER_DEPTH, Preferences, RejectHandling,
 };
 use super::rejects::REJECTED_FOLDER;
 use super::{App, MAX_SIDE, file_count, file_name};
@@ -171,14 +171,7 @@ fn settings_form(ui: &mut egui::Ui, prefs: &mut Preferences, gpu_limit: Option<u
     heading(ui, "Context menu");
     ui.horizontal(|ui| {
         ui.label("Sort subjects by");
-        let order = &mut prefs.subject_order;
-        choice(
-            ui,
-            "subject_order",
-            order,
-            &SubjectOrder::ALL,
-            SubjectOrder::label,
-        );
+        choice(ui, "subject_order", &mut prefs.subject_order);
     });
     ui.add_space(10.0);
     heading(ui, "Toolbar");
@@ -223,14 +216,7 @@ fn rejected_settings(ui: &mut egui::Ui, prefs: &mut Preferences) {
     heading(ui, "Rejected files");
     ui.horizontal(|ui| {
         ui.label(actions::label(ui.style(), Action::HandleRejected));
-        let handling = &mut prefs.reject_handling;
-        choice(
-            ui,
-            "reject_handling",
-            handling,
-            &RejectHandling::ALL,
-            RejectHandling::label,
-        );
+        choice(ui, "reject_handling", &mut prefs.reject_handling);
     });
     hint(
         ui,
@@ -248,14 +234,7 @@ fn preview_settings(ui: &mut egui::Ui, prefs: &mut Preferences, gpu_limit: Optio
     heading(ui, "Preview");
     ui.horizontal(|ui| {
         ui.label(actions::label(ui.style(), Action::FullRes));
-        let binning = &mut prefs.binning;
-        choice(
-            ui,
-            "binning",
-            binning,
-            &BinningPref::ALL,
-            BinningPref::label,
-        );
+        choice(ui, "binning", &mut prefs.binning);
     });
     let mode = match prefs.binning {
         BinningPref::Auto => format!("Bins 2x2, 3x3, … to fit {MAX_SIDE} px."),
@@ -329,18 +308,12 @@ fn slider<N: egui::emath::Numeric>(
     ui.add(slider).dragged()
 }
 
-fn choice<T: Copy + PartialEq>(
-    ui: &mut egui::Ui,
-    id: &str,
-    value: &mut T,
-    options: &[T],
-    name: fn(T) -> &'static str,
-) {
+fn choice<T: Choice>(ui: &mut egui::Ui, id: &str, value: &mut T) {
     egui::ComboBox::from_id_salt(id)
-        .selected_text(name(*value))
+        .selected_text(value.label())
         .show_ui(ui, |ui| {
-            for &option in options {
-                ui.selectable_value(value, option, name(option));
+            for &option in T::ALL {
+                ui.selectable_value(value, option, option.label());
             }
         });
 }

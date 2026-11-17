@@ -9,6 +9,13 @@ use std::collections::HashMap;
 pub const MAX_PREFETCH: usize = 8;
 pub const MAX_SUBFOLDER_DEPTH: usize = 6;
 
+/// A setting picked from a list, saved under its key.
+pub trait Choice: Copy + PartialEq + 'static {
+    const ALL: &'static [Self];
+    fn label(self) -> &'static str;
+    fn key(self) -> &'static str;
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum BinningPref {
     #[default]
@@ -20,18 +27,6 @@ pub enum BinningPref {
 }
 
 impl BinningPref {
-    pub const ALL: [Self; 5] = [Self::Auto, Self::Bin1, Self::Bin2, Self::Bin3, Self::Bin4];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Auto => "Auto",
-            Self::Bin1 => "1x1",
-            Self::Bin2 => "2x2",
-            Self::Bin3 => "3x3",
-            Self::Bin4 => "4x4",
-        }
-    }
-
     pub fn binning(self) -> Binning {
         match self {
             Self::Auto => Binning::MaxSide(MAX_SIDE),
@@ -39,6 +34,20 @@ impl BinningPref {
             Self::Bin2 => Binning::Factor(2),
             Self::Bin3 => Binning::Factor(3),
             Self::Bin4 => Binning::Factor(4),
+        }
+    }
+}
+
+impl Choice for BinningPref {
+    const ALL: &'static [Self] = &[Self::Auto, Self::Bin1, Self::Bin2, Self::Bin3, Self::Bin4];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::Bin1 => "1x1",
+            Self::Bin2 => "2x2",
+            Self::Bin3 => "3x3",
+            Self::Bin4 => "4x4",
         }
     }
 
@@ -60,10 +69,10 @@ pub enum SubjectOrder {
     Name,
 }
 
-impl SubjectOrder {
-    pub const ALL: [Self; 2] = [Self::Size, Self::Name];
+impl Choice for SubjectOrder {
+    const ALL: &'static [Self] = &[Self::Size, Self::Name];
 
-    pub fn label(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             Self::Size => "Apparent size",
             Self::Name => "Name",
@@ -86,10 +95,10 @@ pub enum RejectHandling {
     Delete,
 }
 
-impl RejectHandling {
-    pub const ALL: [Self; 3] = [Self::MoveToFolder, Self::MoveToTrash, Self::Delete];
+impl Choice for RejectHandling {
+    const ALL: &'static [Self] = &[Self::MoveToFolder, Self::MoveToTrash, Self::Delete];
 
-    pub fn label(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             Self::MoveToFolder => "Move to rejected folder",
             Self::MoveToTrash => "Move to trash",
@@ -166,27 +175,9 @@ impl Preferences {
         let Some(storage) = storage else {
             return prefs;
         };
-        if let Some(b) = saved_choice(storage, "binning", &BinningPref::ALL, BinningPref::key) {
-            prefs.binning = b;
-        }
-        let order = saved_choice(
-            storage,
-            "subject_order",
-            &SubjectOrder::ALL,
-            SubjectOrder::key,
-        );
-        if let Some(o) = order {
-            prefs.subject_order = o;
-        }
-        let handling = saved_choice(
-            storage,
-            "reject_handling",
-            &RejectHandling::ALL,
-            RejectHandling::key,
-        );
-        if let Some(h) = handling {
-            prefs.reject_handling = h;
-        }
+        load_choice(storage, "binning", &mut prefs.binning);
+        load_choice(storage, "subject_order", &mut prefs.subject_order);
+        load_choice(storage, "reject_handling", &mut prefs.reject_handling);
         let number = |key: &str, max: usize| {
             (storage.get_string(key)?.parse::<usize>().ok()).filter(|&n| n <= max)
         };
@@ -253,14 +244,12 @@ impl Preferences {
     }
 }
 
-fn saved_choice<T: Copy>(
-    storage: &dyn Storage,
-    key: &str,
-    options: &[T],
-    key_of: fn(T) -> &'static str,
-) -> Option<T> {
-    let saved = storage.get_string(key)?;
-    options.iter().copied().find(|&o| key_of(o) == saved)
+/// Leaves `value` as it is if nothing valid was saved.
+fn load_choice<T: Choice>(storage: &dyn Storage, key: &str, value: &mut T) {
+    let saved = storage.get_string(key);
+    if let Some(&choice) = T::ALL.iter().find(|c| Some(c.key()) == saved.as_deref()) {
+        *value = choice;
+    }
 }
 
 #[derive(Default)]
