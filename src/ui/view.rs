@@ -1,7 +1,8 @@
 use super::actions::{self, Action};
 use super::gpu::MemoryBudget;
 use super::headers::HeaderIndex;
-use super::loader::{Loaded, MeasuredStars, Work};
+use super::loader::{ClipOverlay, Loaded, LoaderStatus, MeasuredStars, Work};
+use super::menu::MenuAction;
 use super::tree::Row;
 use super::{App, ImageToggle, draw, file_name};
 use blip_core::process::StretchParams;
@@ -14,6 +15,7 @@ const FLASH_PERIOD: f64 = 0.8;
 const MOSAIC_GAP: f32 = 3.0;
 const REJECTED_BORDER: f32 = 3.0;
 const FILTER_CORNER_RADIUS: u8 = 3;
+const NO_MATCHES: &str = "No images match the filter";
 const FILTER_TIP: &str =
     "Images whose path contains all words.\n-word leaves out, \"two words\" keeps the space.";
 
@@ -61,43 +63,25 @@ impl App {
         });
         ui.separator();
         self.rejected_panel(ui);
+        self.file_rows(ui);
+    }
 
+    fn file_rows(&mut self, ui: &mut egui::Ui) {
         let scroll_to_selected = self.list.take_scroll_to_selected();
         let scroll_rows = self.list.take_scroll_rows();
         let rows = self.list.tree().visible_rows();
         if rows.is_empty() && self.list.has_images() {
-            ui.weak("No images match the filter.");
+            ui.weak(format!("{NO_MATCHES}."));
         }
-        let row_h = ui.spacing().interact_size.y;
-        let spacing = ui.spacing().item_spacing.y;
-        let scroll_salt = "file_list_scroll";
-        let mut area = egui::ScrollArea::both()
-            .auto_shrink([false, false])
-            .id_salt(scroll_salt);
-        let id = ui.make_persistent_id(egui::IdSalt::new(scroll_salt));
-        let offset =
-            egui::scroll_area::State::load(ui.ctx(), id).map_or(0.0, |s| s.clamped_offset().y);
-        if scroll_rows != 0 {
-            let shifted = offset + scroll_rows as f32 * (row_h + spacing);
-            area = area.vertical_scroll_offset(shifted.max(0.0));
-        }
-        if scroll_to_selected {
-            let view_h = ui.available_height();
-            let selected = self.list.selected();
-            let selected_row = (rows.iter())
+        let selected = self.list.selected();
+        let selected_row = scroll_to_selected.then(|| {
+            (rows.iter())
                 .position(|row| matches!(row, Row::Image { index, .. } if *index == selected))
-                .unwrap_or(0);
-            let top = selected_row as f32 * (row_h + spacing);
-            if top < offset {
-                area = area.vertical_scroll_offset(top);
-            } else if top + row_h > offset + view_h {
-                area = area.vertical_scroll_offset(top + row_h - view_h + spacing);
-            }
-        }
-        let mut clicked = None;
-        let mut menu_file = None;
-        let mut menu_action = None;
-        let mut top = None;
+                .unwrap_or(0)
+        });
+        let row_h = ui.spacing().interact_size.y;
+        let area = list_scroll_area(ui, row_h, scroll_rows, selected_row);
+        let (mut clicked, mut menu, mut top) = (None, None, None);
         area.show_rows(ui, row_h, rows.len(), |ui, range| {
             top = (rows.get(range.start)).map(|row| self.list.row_path(row).to_path_buf());
             for row in &rows[range] {
@@ -109,22 +93,33 @@ impl App {
                 if response.clicked() {
                     clicked = Some((*row).clone());
                 }
-                if let Row::Image { index, .. } = row {
-                    let path = &self.list.files()[*index];
-                    response.context_menu(|ui| {
-                        menu_action = self.file_menu(ui, path);
-                        menu_file = Some(path.clone());
-                    });
+                if let Some(open) = self.row_menu(&response, row) {
+                    menu = Some(open);
                 }
             }
         });
         self.list.set_top_row(top);
-        self.handle_file_menu(ui.ctx(), menu_file, menu_action);
+        let (menu_file, menu_action) = menu.unzip();
+        self.handle_file_menu(ui.ctx(), menu_file, menu_action.flatten());
         match clicked {
             Some(Row::Image { index, .. }) => self.select(index),
             Some(Row::Folder { path, .. }) => self.list.toggle_folder(&path),
             None => {}
         }
+    }
+
+    /// The file whose context menu is open, and what was chosen in it.
+    fn row_menu(
+        &self,
+        response: &egui::Response,
+        row: &Row,
+    ) -> Option<(PathBuf, Option<MenuAction>)> {
+        let Row::Image { index, .. } = row else {
+            return None;
+        };
+        let path = &self.list.files()[*index];
+        let menu = egui::Popup::context_menu(response).show(|ui| self.file_menu(ui, path))?;
+        Some((path.clone(), menu.inner))
     }
 
     /// Selects the text, so typing replaces it.
@@ -282,134 +277,21 @@ impl App {
             self.zoom_and_pan(ui, &response, rect);
         }
 
-        let debug_general = self.show_debug.then(|| self.debug_general());
-        let debug_pos = rect.right_top() + Vec2::new(-44.0, 8.0);
-        let mut debug_drawn = false;
-
-        let params = (self.shown.as_ref()).map_or(self.params, |p| self.settings(p).stretch);
-        let shown = (self.shown.as_ref())
-            .filter(|p| self.cache.touch(p))
-            .and_then(|p| Some((p, self.cache.rendered(p)?)));
-        if let Some((path, loaded)) = shown {
+        let shown = self.shown.clone().filter(|p| self.cache.touch(p));
+        if let Some(path) = &shown {
             let is_current = current.as_ref() == Some(path);
-            let flash = loaded
-                .clip_overlay
-                .as_ref()
-                .filter(|_| is_current && self.flash_clip.is_on(path))
-                .filter(|_| clip_flash_on(ui));
-            let stars = self.stars.get(path);
-
-            if self.mosaic {
-                let ppp = ui.ctx().pixels_per_point();
-                for panel in mosaic_panels(rect, ppp, loaded.size, loaded.src_size) {
-                    painter.image(loaded.texture.id(), panel.screen, panel.uv, Color32::WHITE);
-                    if let Some(overlay) = flash {
-                        let overlay_uv = Rect::from_min_max(
-                            overlay.uv.lerp_inside(panel.uv.min.to_vec2()),
-                            overlay.uv.lerp_inside(panel.uv.max.to_vec2()),
-                        );
-                        painter.image(
-                            overlay.texture.id(),
-                            panel.screen,
-                            overlay_uv,
-                            Color32::WHITE,
-                        );
-                    }
-                }
-            } else {
-                let size = Vec2::new(loaded.size[0] as f32, loaded.size[1] as f32);
-                let fit = (rect.width() / size.x).min(rect.height() / size.y);
-                if self.actual_size {
-                    let ppp = ui.ctx().pixels_per_point();
-                    self.zoom = loaded.src_size[0] as f32 / (ppp * size.x * fit);
-                }
-                let img_rect =
-                    Rect::from_center_size(rect.center() + self.pan, size * fit * self.zoom);
-                let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-                painter.image(loaded.texture.id(), img_rect, uv, Color32::WHITE);
-                if let Some(overlay) = flash {
-                    painter.image(overlay.texture.id(), img_rect, overlay.uv, Color32::WHITE);
-                }
-
-                let shown_on = |toggle: &ImageToggle| is_current && toggle.is_on(path);
-                let star_stats = stars
-                    .map(|s| &s.stats)
-                    .filter(|_| shown_on(&self.star_view));
-                let tilt =
-                    (stars.and_then(|s| s.tilt.as_ref())).filter(|_| shown_on(&self.tilt_view));
-                let wcs = (stars.and_then(|s| s.solution.as_ref().ok()))
-                    .map(|solution| &solution.wcs)
-                    .filter(|_| shown_on(&self.sky_view));
-                let state = OverlayState {
-                    path: path.clone(),
-                    view: rect,
-                    img_rect,
-                    toolbar_height,
-                    pixels_per_point: ui.ctx().pixels_per_point(),
-                    stars: star_stats.is_some(),
-                    tilt: tilt.is_some(),
-                    sky: wcs.is_some(),
-                };
-                let src_size = loaded.src_size;
-                let visible_image = img_rect.intersect(rect);
-                self.overlay
-                    .paint(&painter, visible_image, state, |overlay| {
-                        if let Some(st) = star_stats {
-                            draw::stars(overlay, rect, img_rect, src_size, st);
-                        }
-                        if let Some(tilt) = tilt {
-                            draw::tilt(overlay, img_rect, src_size, tilt);
-                        }
-                        if let Some(wcs) = wcs {
-                            draw::sky(overlay, rect, toolbar_height, img_rect, src_size, wcs);
-                        }
-                    });
-            }
-
+            self.paint_shown(ui, &painter, rect, toolbar_height, path, is_current);
             if self.show_info {
-                let text = info_text(path, loaded, stars, params);
-                draw::text_box(&painter, rect.left_top() + Vec2::new(10.0, 8.0), &text, 1.0);
-            }
-            if let Some(general) = &debug_general {
-                let text = format!("{}\n{general}", debug_image(loaded, stars, params));
-                draw::text_box_aligned(&painter, debug_pos, egui::Align2::RIGHT_TOP, &text, 1.0);
-                debug_drawn = true;
+                self.paint_info(&painter, rect, path);
             }
         } else if self.list.files().is_empty() {
-            let text = if self.scanner.busy() {
-                "Reading folder…".to_string()
-            } else if self.list.has_images() {
-                "No images match the filter".to_string()
-            } else {
-                let key = actions::key_hint(Action::Open);
-                format!("Open a folder ({key}) or drop a folder / FITS / XISF file here")
-            };
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                text,
-                egui::FontId::proportional(18.0),
-                Color32::GRAY,
-            );
+            paint_placeholder(&painter, rect, &self.empty_list_text());
         }
-
-        if let Some(general) = &debug_general
-            && !debug_drawn
-        {
-            draw::text_box_aligned(&painter, debug_pos, egui::Align2::RIGHT_TOP, general, 1.0);
+        if self.show_debug {
+            self.paint_debug(&painter, rect, shown.as_deref());
         }
-
         if let Some(cur) = &current {
-            if let Some(err) = self.cache.error(cur) {
-                let text = format!("{}: {err}", file_name(cur));
-                draw::text_box(&painter, bottom_left + Vec2::new(10.0, -48.0), &text, 1.0);
-            } else if !self.cache.contains(cur) {
-                let spinner_rect = Rect::from_min_size(
-                    rect.right_top() + Vec2::new(-34.0, 10.0),
-                    Vec2::splat(22.0),
-                );
-                ui.put(spinner_rect, egui::Spinner::new().size(22.0));
-            }
+            self.paint_error_or_spinner(ui, &painter, rect, bottom_left, cur);
         }
         if current.as_ref().is_some_and(|p| self.list.is_rejected(p)) {
             let border = egui::Stroke::new(REJECTED_BORDER, draw::RED);
@@ -417,6 +299,139 @@ impl App {
         }
         let status_pos = bottom_left + Vec2::new(10.0, -26.0);
         self.status.paint(ui.ctx(), &painter, status_pos);
+    }
+
+    fn paint_shown(
+        &mut self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        view: Rect,
+        toolbar_height: f32,
+        path: &Path,
+        is_current: bool,
+    ) {
+        let Some(loaded) = self.cache.rendered(path) else {
+            return;
+        };
+        let flash = (loaded.clip_overlay.as_ref())
+            .filter(|_| is_current && self.flash_clip.is_on(path))
+            .filter(|_| clip_flash_on(ui));
+        let ppp = ui.ctx().pixels_per_point();
+        if self.mosaic {
+            paint_mosaic(painter, view, ppp, loaded, flash);
+            return;
+        }
+        let size = Vec2::new(loaded.size[0] as f32, loaded.size[1] as f32);
+        let fit = (view.width() / size.x).min(view.height() / size.y);
+        if self.actual_size {
+            self.zoom = loaded.src_size[0] as f32 / (ppp * size.x * fit);
+        }
+        let img_rect = Rect::from_center_size(view.center() + self.pan, size * fit * self.zoom);
+        paint_image(painter, img_rect, loaded, flash);
+        self.paint_overlays(painter, view, toolbar_height, img_rect, path, is_current);
+    }
+
+    fn paint_overlays(
+        &mut self,
+        painter: &egui::Painter,
+        view: Rect,
+        toolbar_height: f32,
+        img_rect: Rect,
+        path: &Path,
+        is_current: bool,
+    ) {
+        let Some(src_size) = self.cache.rendered(path).map(|l| l.src_size) else {
+            return;
+        };
+        let stars = self.stars.get(path);
+        let shown_on = |toggle: &ImageToggle| is_current && toggle.is_on(path);
+        let star_stats = stars
+            .map(|s| &s.stats)
+            .filter(|_| shown_on(&self.star_view));
+        let tilt = (stars.and_then(|s| s.tilt.as_ref())).filter(|_| shown_on(&self.tilt_view));
+        let wcs = (stars.and_then(|s| s.solution.as_ref().ok()))
+            .map(|solution| &solution.wcs)
+            .filter(|_| shown_on(&self.sky_view));
+        let state = OverlayState {
+            path: path.to_path_buf(),
+            view,
+            img_rect,
+            toolbar_height,
+            pixels_per_point: painter.pixels_per_point(),
+            stars: star_stats.is_some(),
+            tilt: tilt.is_some(),
+            sky: wcs.is_some(),
+        };
+        let visible_image = img_rect.intersect(view);
+        self.overlay
+            .paint(painter, visible_image, state, |overlay| {
+                if let Some(st) = star_stats {
+                    draw::stars(overlay, view, img_rect, src_size, st);
+                }
+                if let Some(tilt) = tilt {
+                    draw::tilt(overlay, img_rect, src_size, tilt);
+                }
+                if let Some(wcs) = wcs {
+                    draw::sky(overlay, view, toolbar_height, img_rect, src_size, wcs);
+                }
+            });
+    }
+
+    fn paint_info(&self, painter: &egui::Painter, view: Rect, path: &Path) {
+        let Some(loaded) = self.cache.rendered(path) else {
+            return;
+        };
+        let text = info_text(
+            path,
+            loaded,
+            self.stars.get(path),
+            self.settings(path).stretch,
+        );
+        draw::text_box(painter, view.left_top() + Vec2::new(10.0, 8.0), &text, 1.0);
+    }
+
+    fn paint_debug(&self, painter: &egui::Painter, view: Rect, shown: Option<&Path>) {
+        let general = self.debug_general();
+        let image = shown.and_then(|path| {
+            let loaded = self.cache.rendered(path)?;
+            let stretch = self.settings(path).stretch;
+            Some(debug_image(loaded, self.stars.get(path), stretch))
+        });
+        let text = match image {
+            Some(image) => format!("{image}\n{general}"),
+            None => general,
+        };
+        let pos = view.right_top() + Vec2::new(-44.0, 8.0);
+        draw::text_box_aligned(painter, pos, egui::Align2::RIGHT_TOP, &text, 1.0);
+    }
+
+    fn empty_list_text(&self) -> String {
+        if self.scanner.busy() {
+            "Reading folder…".to_string()
+        } else if self.list.has_images() {
+            NO_MATCHES.to_string()
+        } else {
+            let key = actions::key_hint(Action::Open);
+            format!("Open a folder ({key}) or drop a folder / FITS / XISF file here")
+        }
+    }
+
+    fn paint_error_or_spinner(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        view: Rect,
+        bottom_left: Pos2,
+        current: &Path,
+    ) {
+        if let Some(err) = self.cache.error(current) {
+            let text = format!("{}: {err}", file_name(current));
+            draw::text_box(painter, bottom_left + Vec2::new(10.0, -48.0), &text, 1.0);
+        } else if !self.cache.contains(current) {
+            let spinner_rect =
+                Rect::from_min_size(view.right_top() + Vec2::new(-34.0, 10.0), Vec2::splat(22.0));
+            ui.put(spinner_rect, egui::Spinner::new().size(22.0));
+        }
     }
 
     /// Mouse wheel zooms around the cursor, dragging pans, double-click resets.
@@ -447,32 +462,6 @@ impl App {
     /// Debug lines that don't depend on the shown image.
     fn debug_general(&self) -> String {
         let status = self.loader.status();
-        let loading = |p: &PathBuf| {
-            (status.workers.iter()).any(|w| matches!(w, Some(Work::Image(j)) if j.path == *p))
-        };
-        let mut neighbors: Vec<(isize, char)> = (self.prefetch_window().into_iter())
-            .filter(|(o, _)| *o != 0)
-            .map(|(o, p)| {
-                let state = if self.cache.contains(p) {
-                    '●'
-                } else if self.cache.error(p).is_some() {
-                    '×'
-                } else if loading(p) {
-                    '◐'
-                } else {
-                    '○'
-                };
-                (o, state)
-            })
-            .collect();
-        neighbors.sort_by_key(|(o, _)| o.abs());
-        let states_on_side = |below: bool| -> String {
-            (neighbors.iter())
-                .filter(|(o, _)| (*o > 0) == below)
-                .map(|(_, state)| *state)
-                .collect()
-        };
-        let prefetch = format!("+{} · -{}", states_on_side(true), states_on_side(false));
         let mut lines = vec![
             format!(
                 "cache {}/{} images · {} MB on GPU · {} star measurements · {} headers",
@@ -483,10 +472,10 @@ impl App {
                 self.list.header_count(),
             ),
             match self.cache.memory_budget() {
-                Some(m) => format!("GPU {} · memory: {}", self.gpu_info, memory(m)),
+                Some(m) => format!("GPU {} · memory: {}", self.gpu_info, budget_text(m)),
                 None => format!("GPU {}", self.gpu_info),
             },
-            format!("prefetch {prefetch}"),
+            format!("prefetch {}", self.prefetch_states(&status)),
             format!(
                 "queue: {} images · {} star measurements waiting",
                 status.queued_images, status.queued_stars
@@ -506,6 +495,36 @@ impl App {
             lines.push(format!("worker {}: {work}", i + 1));
         }
         lines.join("\n")
+    }
+
+    /// The prefetched images after and before the current one, nearest first.
+    fn prefetch_states(&self, status: &LoaderStatus) -> String {
+        let loading = |p: &PathBuf| {
+            (status.workers.iter()).any(|w| matches!(w, Some(Work::Image(j)) if j.path == *p))
+        };
+        let state = |p: &PathBuf| {
+            if self.cache.contains(p) {
+                '●'
+            } else if self.cache.error(p).is_some() {
+                '×'
+            } else if loading(p) {
+                '◐'
+            } else {
+                '○'
+            }
+        };
+        let mut neighbors: Vec<(isize, char)> = (self.prefetch_window().into_iter())
+            .filter(|(o, _)| *o != 0)
+            .map(|(o, p)| (o, state(p)))
+            .collect();
+        neighbors.sort_by_key(|(o, _)| o.abs());
+        let states_on_side = |below: bool| -> String {
+            (neighbors.iter())
+                .filter(|(o, _)| (*o > 0) == below)
+                .map(|(_, state)| *state)
+                .collect()
+        };
+        format!("+{} · -{}", states_on_side(true), states_on_side(false))
     }
 }
 
@@ -548,6 +567,84 @@ fn mosaic_panels(
             uv: Rect::from_min_max(Pos2::new(u0, v0), Pos2::new(u1, v1)),
         }
     })
+}
+
+fn paint_mosaic(
+    painter: &egui::Painter,
+    view: Rect,
+    ppp: f32,
+    loaded: &Loaded,
+    flash: Option<&ClipOverlay>,
+) {
+    for panel in mosaic_panels(view, ppp, loaded.size, loaded.src_size) {
+        painter.image(loaded.texture.id(), panel.screen, panel.uv, Color32::WHITE);
+        if let Some(overlay) = flash {
+            let overlay_uv = Rect::from_min_max(
+                overlay.uv.lerp_inside(panel.uv.min.to_vec2()),
+                overlay.uv.lerp_inside(panel.uv.max.to_vec2()),
+            );
+            painter.image(
+                overlay.texture.id(),
+                panel.screen,
+                overlay_uv,
+                Color32::WHITE,
+            );
+        }
+    }
+}
+
+fn paint_image(
+    painter: &egui::Painter,
+    img_rect: Rect,
+    loaded: &Loaded,
+    flash: Option<&ClipOverlay>,
+) {
+    let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+    painter.image(loaded.texture.id(), img_rect, uv, Color32::WHITE);
+    if let Some(overlay) = flash {
+        painter.image(overlay.texture.id(), img_rect, overlay.uv, Color32::WHITE);
+    }
+}
+
+fn paint_placeholder(painter: &egui::Painter, view: Rect, text: &str) {
+    painter.text(
+        view.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(18.0),
+        Color32::GRAY,
+    );
+}
+
+/// Keeps the same files in view when rows above them come or go, and scrolls the selected
+/// row into view.
+fn list_scroll_area(
+    ui: &egui::Ui,
+    row_h: f32,
+    scroll_rows: isize,
+    selected_row: Option<usize>,
+) -> egui::ScrollArea {
+    let spacing = ui.spacing().item_spacing.y;
+    let scroll_salt = "file_list_scroll";
+    let mut area = egui::ScrollArea::both()
+        .auto_shrink([false, false])
+        .id_salt(scroll_salt);
+    let id = ui.make_persistent_id(egui::IdSalt::new(scroll_salt));
+    let offset = egui::scroll_area::State::load(ui.ctx(), id).map_or(0.0, |s| s.clamped_offset().y);
+    if scroll_rows != 0 {
+        let shifted = offset + scroll_rows as f32 * (row_h + spacing);
+        area = area.vertical_scroll_offset(shifted.max(0.0));
+    }
+    if let Some(selected_row) = selected_row {
+        let view_h = ui.available_height();
+        let top = selected_row as f32 * (row_h + spacing);
+        if top < offset {
+            area = area.vertical_scroll_offset(top);
+        } else if top + row_h > offset + view_h {
+            area = area.vertical_scroll_offset(top + row_h - view_h + spacing);
+        }
+    }
+    area
 }
 
 /// Whether the clipped-pixel flash is in its visible half. Repaints at the next switch.
@@ -625,7 +722,7 @@ fn gear_button(ui: &mut egui::Ui) -> egui::Response {
     response
 }
 
-fn memory(m: MemoryBudget) -> String {
+fn budget_text(m: MemoryBudget) -> String {
     const GB: f64 = (1u64 << 30) as f64;
     if m.budget >= 1 << 30 {
         format!("{:.1}/{:.1} GB", m.used as f64 / GB, m.budget as f64 / GB)

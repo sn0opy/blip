@@ -1,6 +1,7 @@
 //! Painting helpers for overlays on top of the image. (Clipped pixels are a texture,
 //! see `texture::clip_overlay`.)
 
+use super::subject_name;
 use blip_core::stars::StarStats;
 use blip_core::tilt::Tilt;
 use blip_core::wcs::Wcs;
@@ -497,11 +498,7 @@ impl SkyPainter<'_, '_> {
             if !bounds.intersects(visible) {
                 continue;
             }
-            let text = if d.common_name.is_empty() {
-                d.label.to_string()
-            } else {
-                format!("{}\n{}", d.label, d.common_name)
-            };
+            let text = subject_name(d, "\n");
             let above_outline = bounds.top().max(visible.top()) - 2.0;
             let anchor = Pos2::new(center.x, above_outline.min(center.y));
             self.label(anchor, &text, gold, egui::Align2::CENTER_BOTTOM);

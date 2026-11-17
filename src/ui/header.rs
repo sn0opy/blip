@@ -5,7 +5,7 @@ use super::dialogs::DIALOG_WIDTH;
 use super::{App, file_name};
 use blip_core::image::Card;
 use eframe::egui;
-use egui_extras::{Column, TableBuilder};
+use egui_extras::{Column, TableBuilder, TableRow};
 use std::cmp::Ordering;
 
 /// The heading, file name, Close button, frame and a gap to the window's edges.
@@ -119,7 +119,6 @@ impl App {
         let modal = egui::Modal::new(egui::Id::unique("header")).show(ctx, |ui| {
             let screen = ctx.content_rect();
             ui.set_width(WIDTH);
-            let style = ui.style().clone();
             ui.heading("Header");
             ui.add_space(8.0);
             ui.label(egui::RichText::new(file_name(&path)).strong());
@@ -142,7 +141,7 @@ impl App {
                 }
             }
             ui.add_space(10.0);
-            if ui.button(with_key(&style, "Close", "Esc")).clicked() {
+            if ui.button(with_key(ui.style(), "Close", "Esc")).clicked() {
                 close = true;
             }
         });
@@ -172,12 +171,7 @@ fn table(ui: &mut egui::Ui, cards: &[Card], header_table: &mut HeaderTable) {
         .header(row_height, |mut header| {
             for column in SortColumn::ALL {
                 header.col(|ui| {
-                    let text = egui::RichText::new(column.label()).strong();
-                    let response = ui.add(egui::Button::new(text).frame(false));
-                    if let Some(s) = sort.filter(|s| s.column == column) {
-                        sort_arrow(ui, response.rect, s.descending);
-                    }
-                    if response.clicked() {
+                    if header_cell(ui, column, sort).clicked() {
                         clicked = Some(column);
                     }
                 });
@@ -186,18 +180,31 @@ fn table(ui: &mut egui::Ui, cards: &[Card], header_table: &mut HeaderTable) {
         .body(|body| {
             body.rows(row_height, order.len(), |mut row| {
                 let card = &cards[order[row.index()]];
-                row.col(|ui| {
-                    ui.label(egui::RichText::new(&card.key).monospace());
-                });
-                for column in [SortColumn::Value, SortColumn::Comment] {
-                    row.col(|ui| {
-                        ui.label(column.text(card));
-                    });
-                }
+                card_cells(&mut row, card);
             });
         });
     if let Some(column) = clicked {
         header_table.sort_by(column);
+    }
+}
+
+fn header_cell(ui: &mut egui::Ui, column: SortColumn, sort: Option<Sort>) -> egui::Response {
+    let text = egui::RichText::new(column.label()).strong();
+    let response = ui.add(egui::Button::new(text).frame(false));
+    if let Some(s) = sort.filter(|s| s.column == column) {
+        sort_arrow(ui, response.rect, s.descending);
+    }
+    response
+}
+
+fn card_cells(row: &mut TableRow, card: &Card) {
+    row.col(|ui| {
+        ui.label(egui::RichText::new(&card.key).monospace());
+    });
+    for column in [SortColumn::Value, SortColumn::Comment] {
+        row.col(|ui| {
+            ui.label(column.text(card));
+        });
     }
 }
 

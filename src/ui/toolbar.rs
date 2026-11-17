@@ -138,14 +138,14 @@ fn bar(ui: &mut egui::Ui, layout: Layout, state: impl Fn(Action) -> State) -> Op
             x += layout.group_gap;
         }
         for &action in *group {
-            let State { enabled, active } = state(action);
+            let button_state = state(action);
             let button = Rect::from_min_size(
                 Pos2::new(x, rect.top() + layout.padding),
                 Vec2::splat(layout.button),
             );
             x += layout.button;
             // Not focusable: the arrow keys and Enter would move focus and press buttons.
-            let sense = if enabled {
+            let sense = if button_state.enabled {
                 Sense::CLICK
             } else {
                 Sense::hover()
@@ -157,32 +157,44 @@ fn bar(ui: &mut egui::Ui, layout: Layout, state: impl Fn(Action) -> State) -> Op
             if response.clicked() {
                 clicked = Some(action);
             }
-            let fill = if !enabled {
-                Color32::TRANSPARENT
-            } else if response.is_pointer_button_down_on() {
-                Color32::from_white_alpha(60)
-            } else if active {
-                Color32::from_white_alpha(45)
-            } else if response.hovered() {
-                Color32::from_white_alpha(20)
-            } else {
-                Color32::TRANSPARENT
-            };
+            let fill = button_fill(&response, button_state);
             painter.rect_filled(button.shrink(layout.pixel), draw::PANEL_RADIUS, fill);
-            let color = if !enabled {
-                Color32::from_gray(85)
-            } else if (action == Delete && response.hovered()) || (action == Reject && active) {
-                draw::RED
-            } else if active || response.hovered() {
-                Color32::WHITE
-            } else {
-                Color32::from_gray(185)
-            };
             let icon_rect = Rect::from_center_size(button.center(), Vec2::splat(ICON));
+            let color = icon_color(action, &response, button_state);
             paint_icon(painter, icon_rect, action, color);
         }
     }
     clicked
+}
+
+fn button_fill(response: &egui::Response, State { enabled, active }: State) -> Color32 {
+    if !enabled {
+        Color32::TRANSPARENT
+    } else if response.is_pointer_button_down_on() {
+        Color32::from_white_alpha(60)
+    } else if active {
+        Color32::from_white_alpha(45)
+    } else if response.hovered() {
+        Color32::from_white_alpha(20)
+    } else {
+        Color32::TRANSPARENT
+    }
+}
+
+fn icon_color(
+    action: Action,
+    response: &egui::Response,
+    State { enabled, active }: State,
+) -> Color32 {
+    if !enabled {
+        Color32::from_gray(85)
+    } else if (action == Delete && response.hovered()) || (action == Reject && active) {
+        draw::RED
+    } else if active || response.hovered() {
+        Color32::WHITE
+    } else {
+        Color32::from_gray(185)
+    }
 }
 
 /// Drawn in a square where both axes run from -1 to 1.

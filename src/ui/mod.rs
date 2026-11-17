@@ -28,6 +28,7 @@ pub use gpu::wgpu_options;
 pub use loader::{Loader, Preloader};
 pub use scan::Scanner;
 
+use blip_core::dso::Dso;
 use blip_core::process::StretchParams;
 use cache::ImageCache;
 use dialogs::Deletion;
@@ -693,6 +694,14 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+fn subject_name(d: &Dso, separator: &str) -> String {
+    if d.common_name.is_empty() {
+        d.label.to_string()
+    } else {
+        format!("{}{separator}{}", d.label, d.common_name)
+    }
 }
 
 fn file_count(n: usize) -> String {

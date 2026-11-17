@@ -1,11 +1,13 @@
 //! The file list's context menu: the plate solve's center and subjects, searches on
 //! AstroBin, Aladin and SIMBAD, and file actions.
 
-use super::App;
 use super::dialogs::Deletion;
+use super::loader::MeasuredStars;
 use super::prefs::SubjectOrder;
+use super::{App, subject_name};
 use blip_core::astrobin::{self, FieldOfView, Search};
 use blip_core::dso::{self, Dso};
+use blip_core::solve::Solution;
 use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -57,31 +59,19 @@ impl App {
 
     pub(super) fn file_menu(&self, ui: &mut egui::Ui, path: &Path) -> Option<MenuAction> {
         point_at_entries(ui);
+        let sky = self.sky_entries(ui, path);
+        ui.separator();
+        self.file_entries(ui, path).or(sky)
+    }
+
+    fn sky_entries(&self, ui: &mut egui::Ui, path: &Path) -> Option<MenuAction> {
         let measured = self.stars.get(path);
-        let solution = match measured.map(|m| &m.solution) {
-            Some(Ok(solution)) => Some(solution),
-            Some(Err(e)) => {
-                ui.weak(format!("Plate solve failed: {e}"));
-                None
-            }
-            None => {
-                ui.weak("Plate solving…");
-                None
-            }
-        };
-        let solved = solution.is_some();
+        let solution = solution_or_reason(ui, measured);
         let field = solution.map(|s| FieldOfView::of(&s.wcs, s.size));
-        let mut subjects = solution.map_or_else(Vec::new, |s| dso::in_field(&s.wcs, s.size));
-        if self.prefs.subject_order == SubjectOrder::Name {
-            subjects.sort_by_cached_key(|d| natural_key(d.label));
-        }
-        let status = |text: &str| Some(MenuAction::Status(text.into()));
+        let subjects = self.subjects(solution);
         let mut action = None;
 
-        let copy_center = egui::Button::new("Copy center coordinates");
-        if ui.add_enabled(solved, copy_center).clicked()
-            && let Some(field) = &field
-        {
+        if let Some(field) = field_button(ui, "Copy center coordinates", field) {
             let (ra, dec) = field.center;
             ui.ctx().copy_text(coordinates(ra, dec));
             action = status("Copied center coordinates");
@@ -91,15 +81,14 @@ impl App {
             .add_enabled(!subjects.is_empty(), copy_subjects)
             .clicked()
         {
-            let names: Vec<String> = subjects.iter().map(|d| subject_name(d)).collect();
+            let names: Vec<String> = subjects.iter().map(|d| subject_name(d, ", ")).collect();
             ui.ctx().copy_text(names.join("\n"));
             let s = if subjects.len() == 1 { "" } else { "s" };
             action = status(&format!("Copied {} subject{s}", subjects.len()));
         }
-        let search_field = egui::Button::new("Search this FOV on AstroBin");
-        if ui.add_enabled(solved, search_field).clicked() {
+        if let Some(field) = field_button(ui, "Search this FOV on AstroBin", field) {
             let search = Search {
-                field,
+                field: Some(field),
                 focal_length_mm: measured.and_then(|m| m.focal_length_mm),
                 ..Search::default()
             };
@@ -112,17 +101,25 @@ impl App {
             };
             action = open_search(ui, &search);
         }
-        let open_aladin = egui::Button::new("Open this FOV in Aladin Lite");
-        if ui.add_enabled(solved, open_aladin).clicked()
-            && let Some(field) = &field
-        {
-            open_url(ui, aladin_url(field));
+        if let Some(field) = field_button(ui, "Open this FOV in Aladin Lite", field) {
+            open_url(ui, aladin_url(&field));
         }
         if let Some(d) = subject_menu(ui, "Look up subject in SIMBAD", &subjects) {
             open_url(ui, simbad_url(d));
         }
+        action
+    }
 
-        ui.separator();
+    fn subjects(&self, solution: Option<&Solution>) -> Vec<&'static Dso> {
+        let mut subjects = solution.map_or_else(Vec::new, |s| dso::in_field(&s.wcs, s.size));
+        if self.prefs.subject_order == SubjectOrder::Name {
+            subjects.sort_by_cached_key(|d| natural_key(d.label));
+        }
+        subjects
+    }
+
+    fn file_entries(&self, ui: &mut egui::Ui, path: &Path) -> Option<MenuAction> {
+        let mut action = None;
         if ui.button(REVEAL).clicked()
             && let Err(e) = reveal(path)
         {
@@ -159,23 +156,53 @@ fn point_at_entries(ui: &mut egui::Ui) {
     ui.visuals_mut().interact_cursor = Some(egui::CursorIcon::PointingHand);
 }
 
+fn status(text: &str) -> Option<MenuAction> {
+    Some(MenuAction::Status(text.into()))
+}
+
+fn solution_or_reason<'a>(
+    ui: &mut egui::Ui,
+    measured: Option<&'a MeasuredStars>,
+) -> Option<&'a Solution> {
+    match measured.map(|m| &m.solution) {
+        Some(Ok(solution)) => Some(solution),
+        Some(Err(e)) => {
+            ui.weak(format!("Plate solve failed: {e}"));
+            None
+        }
+        None => {
+            ui.weak("Plate solving…");
+            None
+        }
+    }
+}
+
+fn field_button(ui: &mut egui::Ui, text: &str, field: Option<FieldOfView>) -> Option<FieldOfView> {
+    let button = egui::Button::new(text);
+    let clicked = ui.add_enabled(field.is_some(), button).clicked();
+    field.filter(|_| clicked)
+}
+
 /// Returns the subject clicked.
 fn subject_menu(ui: &mut egui::Ui, label: &str, subjects: &[&'static Dso]) -> Option<&'static Dso> {
-    let mut clicked = None;
-    ui.add_enabled_ui(!subjects.is_empty(), |ui| {
-        ui.menu_button(label, |ui| {
+    let enabled = ui.add_enabled_ui(!subjects.is_empty(), |ui| {
+        let menu = ui.menu_button(label, |ui| {
             point_at_entries(ui);
-            egui::ScrollArea::vertical()
-                .max_height(MAX_SUBJECT_LIST_HEIGHT)
-                .show(ui, |ui| {
-                    for d in subjects {
-                        if ui.button(subject_name(d)).clicked() {
-                            clicked = Some(*d);
-                        }
-                    }
-                });
+            let scroll = egui::ScrollArea::vertical().max_height(MAX_SUBJECT_LIST_HEIGHT);
+            scroll.show(ui, |ui| subject_buttons(ui, subjects)).inner
         });
+        menu.inner.flatten()
     });
+    enabled.inner
+}
+
+fn subject_buttons(ui: &mut egui::Ui, subjects: &[&'static Dso]) -> Option<&'static Dso> {
+    let mut clicked = None;
+    for d in subjects {
+        if ui.button(subject_name(d, ", ")).clicked() {
+            clicked = Some(*d);
+        }
+    }
     clicked
 }
 
@@ -229,14 +256,6 @@ fn reveal(path: &Path) -> std::io::Result<()> {
     let mut child = command.spawn()?;
     std::thread::spawn(move || child.wait());
     Ok(())
-}
-
-fn subject_name(d: &Dso) -> String {
-    if d.common_name.is_empty() {
-        d.label.to_string()
-    } else {
-        format!("{}, {}", d.label, d.common_name)
-    }
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
