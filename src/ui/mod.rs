@@ -2,8 +2,10 @@
 //! views and dialogs live in the submodules.
 
 mod actions;
+mod cache;
 mod dialogs;
 mod draw;
+mod export;
 mod filter;
 mod gpu;
 mod header;
@@ -14,6 +16,7 @@ mod menu;
 mod prefs;
 mod rejects;
 mod scan;
+mod status;
 mod texture;
 mod toggles;
 mod toolbar;
@@ -26,68 +29,24 @@ pub use loader::{Loader, Preloader};
 pub use scan::Scanner;
 
 use blip_core::process::StretchParams;
-use blip_core::solve::Solution;
-use blip_core::stars::StarStats;
-use blip_core::tilt::Tilt;
+use cache::ImageCache;
 use dialogs::Deletion;
 use eframe::egui::{self, Vec2};
+use export::Exports;
 use headers::{HeaderScanner, Progress};
 use list::FileList;
-use loader::{Binning, Loaded, Message, Settings};
+use loader::{Binning, Loaded, MeasuredStars, Message, Settings};
 use prefs::{BinningPref, Preferences};
 use scan::{Listing, is_image, list_images};
-use std::any::Any;
-use std::cmp::Reverse;
+use status::{StatusKind, StatusLine};
 use std::collections::HashMap;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::{Duration, Instant};
+use std::sync::mpsc::Receiver;
+use std::time::Duration;
 
 pub const APP_ID: &str = "sh.sascha.blip";
 /// Previews are binned so their long side is at most this many pixels.
 const MAX_SIDE: usize = 3200;
-/// Number of rendered images kept on the GPU (binned / full resolution without a memory
-/// budget).
-const CACHE_SIZE: usize = 10;
-const CACHE_SIZE_FULL: usize = 4;
-const MIN_CACHE: usize = 2;
-const STATUS_FADE: f32 = 0.8;
-
-/// A message in the bottom-left corner. Transient ones fade out after `ttl` seconds.
-struct Status {
-    kind: StatusKind,
-    text: String,
-    since: Instant,
-    ttl: Option<f32>,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum StatusKind {
-    Message,
-    FolderError,
-    ReadingHeaders,
-}
-
-pub struct MeasuredStars {
-    stats: StarStats,
-    tilt: Option<Tilt>,
-    detect_ms: f64,
-    solution: Result<Solution, String>,
-    focal_length_mm: Option<f64>,
-}
-
-impl MeasuredStars {
-    fn failed(reason: &str) -> Self {
-        Self {
-            stats: StarStats::default(),
-            tilt: None,
-            detect_ms: 0.0,
-            solution: Err(reason.to_string()),
-            focal_length_mm: None,
-        }
-    }
-}
 
 /// On for every image if `default`, except for the one it was last toggled on.
 struct ImageToggle {
@@ -124,17 +83,6 @@ impl ImageToggle {
     }
 }
 
-struct CacheEntry {
-    loaded: Loaded,
-    last_used: u64,
-}
-
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum EvictionOrder {
-    OutsideWindow { least_recently_used: u64 },
-    InWindow { lowest_priority: Reverse<usize> },
-}
-
 pub struct App {
     loader: Loader,
     scanner: Scanner,
@@ -143,19 +91,9 @@ pub struct App {
     list: FileList,
     /// Direction of the last navigation step, used to prefetch ahead.
     direction: isize,
-    cache: HashMap<PathBuf, CacheEntry>,
-    errors: HashMap<PathBuf, String>,
+    cache: ImageCache,
     /// The image on screen; lags behind `selected` while the next one loads.
     shown: Option<PathBuf>,
-    /// The shown image while a settings change re-renders it (avoids a black flash).
-    stale: Option<(PathBuf, CacheEntry)>,
-    tick: u64,
-    gpu_memory: Option<gpu::MemoryQuery>,
-    memory_budget: Option<gpu::MemoryBudget>,
-    /// Largest image since the last settings change.
-    image_bytes: usize,
-    /// Set once an upload ran out of GPU memory.
-    memory_cap: Option<usize>,
 
     params: StretchParams,
     /// Steps by which the stretch's target background is raised (`StretchParams::boosted`).
@@ -191,11 +129,10 @@ pub struct App {
     header_table: header::HeaderTable,
     /// The settings dialog's values while a slider is dragged, applied on release.
     prefs_draft: Option<Preferences>,
-    status: Option<Status>,
+    status: StatusLine,
     title: String,
 
-    export_tx: Sender<Result<String, String>>,
-    export_rx: Receiver<Result<String, String>>,
+    exports: Exports,
     disposal: Option<Receiver<rejects::Disposal>>,
 }
 
@@ -263,7 +200,6 @@ impl App {
             texture::Uploader::new(&cc.egui_ctx, cc.wgpu_render_state.as_ref()),
         );
         let prefs = Preferences::load(cc.storage);
-        let (export_tx, export_rx) = channel();
         let gpu_memory = cc.wgpu_render_state.as_ref().map(gpu::MemoryQuery::new);
         let activity = loader.activity();
         let header_scanner =
@@ -277,15 +213,8 @@ impl App {
                 .map(PathBuf::from),
             list: FileList::new(header_scanner, &prefs),
             direction: 1,
-            cache: HashMap::new(),
-            errors: HashMap::new(),
+            cache: ImageCache::new(gpu_memory),
             shown: None,
-            stale: None,
-            tick: 0,
-            memory_budget: gpu_memory.as_ref().and_then(gpu::MemoryQuery::budget),
-            gpu_memory,
-            image_bytes: 0,
-            memory_cap: None,
             params: StretchParams {
                 neutralize: prefs.neutralize,
                 ..StretchParams::default()
@@ -321,10 +250,9 @@ impl App {
             overlay: draw::CachedOverlay::default(),
             header_table: header::HeaderTable::default(),
             prefs_draft: None,
-            status: None,
+            status: StatusLine::default(),
             title: String::new(),
-            export_tx,
-            export_rx,
+            exports: Exports::default(),
             disposal: None,
         };
         if let Some(path) = start {
@@ -346,15 +274,11 @@ impl App {
             (dir, Some(path.to_path_buf()))
         };
         self.list.open(dir, file.filter(|f| is_image(f)));
-        self.clear_status(StatusKind::ReadingHeaders);
+        self.status.clear(StatusKind::ReadingHeaders);
         self.direction = 1;
         self.cache.clear();
-        self.errors.clear();
         self.stars.clear();
         self.shown = None;
-        self.stale = None;
-        self.image_bytes = 0;
-        self.memory_cap = None;
         self.files_changed();
         self.refresh();
     }
@@ -373,12 +297,12 @@ impl App {
         }
         let files = match listing.files {
             Ok(files) => {
-                self.clear_status(StatusKind::FolderError);
+                self.status.clear(StatusKind::FolderError);
                 files
             }
             Err(e) => {
                 let text = format!("Cannot read folder: {e}");
-                self.show_status(StatusKind::FolderError, text, None);
+                self.status.show(StatusKind::FolderError, text, None);
                 Vec::new()
             }
         };
@@ -395,7 +319,7 @@ impl App {
 
     fn poll_headers(&mut self) {
         if !self.list.scanning() {
-            self.clear_status(StatusKind::ReadingHeaders);
+            self.status.clear(StatusKind::ReadingHeaders);
         }
         let Some((progress, changed)) = self.list.poll_headers() else {
             return;
@@ -403,13 +327,16 @@ impl App {
         match progress {
             Progress::Reading { done, total } => {
                 let text = format!("Reading headers {done}/{total}");
-                self.show_status(StatusKind::ReadingHeaders, text, None);
+                self.status.show(StatusKind::ReadingHeaders, text, None);
             }
             Progress::Finished {
                 done,
                 failed,
                 elapsed,
-            } => self.set_status(headers_read(done, failed, elapsed), Some(4.0)),
+            } => {
+                let text = headers_read(done, failed, elapsed);
+                self.status.set(text, Some(4.0));
+            }
         }
         if changed {
             self.files_changed();
@@ -450,10 +377,10 @@ impl App {
     /// the same files where still missing. The file with the open menu is measured
     /// before anything else.
     fn request_loads(&mut self) {
-        self.memory_budget = self.gpu_memory.as_ref().and_then(gpu::MemoryQuery::budget);
+        self.cache.update_memory_budget();
         let window: Vec<&PathBuf> = (self.prefetch_window().into_iter())
             .map(|(_, p)| p)
-            .filter(|p| !self.errors.contains_key(*p))
+            .filter(|p| self.cache.error(p).is_none())
             .collect();
         let missing = |have: &dyn Fn(&PathBuf) -> bool| -> Vec<PathBuf> {
             window
@@ -462,7 +389,7 @@ impl App {
                 .map(|p| (*p).clone())
                 .collect()
         };
-        let images = missing(&|p| self.cache.contains_key(p));
+        let images = missing(&|p| self.cache.contains(p));
         let stars = missing(&|p| self.stars.contains_key(p));
         let urgent_stars = (self.menu_file.clone()).filter(|p| !self.stars.contains_key(p));
         let waiting = self.current().is_some_and(|c| images.first() == Some(c));
@@ -497,23 +424,16 @@ impl App {
             self.cache.remove(&reverted);
         }
         let on = self.auto_stretch.is_on(&cur);
-        self.stale = self.cache.remove_entry(&cur).or(self.stale.take());
+        self.cache.rerender(&cur);
         let state = if on { "on" } else { "off" };
         let key = actions::key_hint(actions::Action::AutoStretch);
-        self.set_status(format!("Auto stretch {state} ({key} to toggle)"), Some(2.0));
+        let text = format!("Auto stretch {state} ({key} to toggle)");
+        self.status.set(text, Some(2.0));
         self.request_loads();
     }
 
     fn reload_all(&mut self) {
-        self.stale = self
-            .shown
-            .as_ref()
-            .and_then(|p| self.cache.remove_entry(p))
-            .or(self.stale.take());
-        self.cache.clear();
-        self.errors.clear();
-        self.image_bytes = 0;
-        self.memory_cap = None;
+        self.cache.rerender_all(self.shown.as_deref());
         self.request_loads();
     }
 
@@ -534,18 +454,8 @@ impl App {
                 {
                     loaded_any = true;
                     match result {
-                        Ok(loaded) => {
-                            self.tick += 1;
-                            let last_used = self.tick;
-                            let mut loaded = *loaded;
-                            let header = std::mem::take(&mut loaded.header);
-                            files_changed |= self.list.add_loaded_header(path.clone(), header);
-                            self.image_bytes = self.image_bytes.max(loaded.gpu_bytes());
-                            self.cache.insert(path, CacheEntry { loaded, last_used });
-                        }
-                        Err(e) => {
-                            self.errors.insert(path, e);
-                        }
+                        Ok(loaded) => files_changed |= self.receive_image(path, *loaded),
+                        Err(e) => self.cache.insert_error(path, e),
                     }
                 }
                 Message::OutOfMemory(path, settings)
@@ -563,19 +473,21 @@ impl App {
             self.files_changed();
         }
         if loaded_any {
-            self.memory_budget = self.gpu_memory.as_ref().and_then(gpu::MemoryQuery::budget);
+            self.cache.update_memory_budget();
             self.evict();
             if self.cache_limit() != limit {
                 self.request_loads();
             }
         }
+        self.poll_exports();
+    }
 
-        while let Ok(msg) = self.export_rx.try_recv() {
-            match msg {
-                Ok(text) => self.set_status(text, Some(2.5)),
-                Err(text) => self.set_status(text, Some(8.0)),
-            }
-        }
+    /// Returns whether the file list changed.
+    fn receive_image(&mut self, path: PathBuf, mut loaded: Loaded) -> bool {
+        let header = std::mem::take(&mut loaded.header);
+        let files_changed = self.list.add_loaded_header(path.clone(), header);
+        self.cache.insert(path, loaded);
+        files_changed
     }
 
     fn loads_full_res(&self) -> bool {
@@ -631,18 +543,9 @@ impl App {
         }
     }
 
-    /// Half the GPU memory budget; the rest is left to other processes and decoding.
     fn cache_limit(&self) -> usize {
-        let wanted = CACHE_SIZE.max(1 + self.prefs.ahead + self.prefs.behind);
-        let fits = match self.memory_budget {
-            Some(m) if self.image_bytes > 0 => {
-                let n = m.budget / 2 / self.image_bytes as u64;
-                usize::try_from(n).unwrap_or(usize::MAX).max(MIN_CACHE)
-            }
-            _ if self.loads_full_res() => CACHE_SIZE_FULL,
-            _ => wanted,
-        };
-        wanted.min(fits).min(self.memory_cap.unwrap_or(usize::MAX))
+        let (ahead, behind) = (self.prefs.ahead, self.prefs.behind);
+        self.cache.limit(ahead, behind, self.loads_full_res())
     }
 
     fn evict(&mut self) {
@@ -655,67 +558,41 @@ impl App {
     }
 
     fn eviction_victim(&self, drop_shown: bool) -> Option<PathBuf> {
-        let current = self.current();
         let shown = self.shown.as_ref().filter(|_| !drop_shown);
         let window: Vec<&PathBuf> = (self.prefetch_window().into_iter())
             .map(|(_, p)| p)
             .collect();
-        let eviction_order =
-            |path: &PathBuf, entry: &CacheEntry| match window.iter().position(|w| *w == path) {
-                Some(priority) => EvictionOrder::InWindow {
-                    lowest_priority: Reverse(priority),
-                },
-                None => EvictionOrder::OutsideWindow {
-                    least_recently_used: entry.last_used,
-                },
-            };
-        (self.cache.iter())
-            .filter(|(p, _)| Some(*p) != current && Some(*p) != shown)
-            .min_by_key(|(p, e)| eviction_order(p, e))
-            .map(|(p, _)| p.clone())
+        self.cache.eviction_victim(&window, [self.current(), shown])
     }
 
     fn out_of_memory(&mut self, path: PathBuf) {
-        self.stale = None;
         let is_current = self.current() == Some(&path);
-        let fits = match self.eviction_victim(is_current) {
-            Some(victim) => {
-                let fits = self.cache.len();
-                self.cache.remove(&victim);
-                fits
-            }
-            None if is_current => {
-                self.errors.insert(path, "not enough GPU memory".into());
-                self.request_loads();
-                return;
-            }
-            // Only the current image fits.
-            None => 1,
-        };
-        self.memory_cap = Some(fits);
-        let s = if fits == 1 { "" } else { "s" };
-        self.set_status(
-            format!("GPU memory full: keeping {fits} image{s}"),
-            Some(4.0),
-        );
+        let victim = self.eviction_victim(is_current);
+        if let Some(fits) = self.cache.out_of_memory(path, victim, is_current) {
+            let s = if fits == 1 { "" } else { "s" };
+            self.status.set(
+                format!("GPU memory full: keeping {fits} image{s}"),
+                Some(4.0),
+            );
+        }
         self.request_loads();
     }
 
     fn delete(&mut self, path: &Path) {
         if let Err(e) = std::fs::remove_file(path) {
-            self.set_status(format!("Delete failed: {e}"), Some(8.0));
+            self.status.set(format!("Delete failed: {e}"), Some(8.0));
             return;
         }
         self.forget(&[path.to_path_buf()]);
-        self.set_status(format!("Deleted {}", file_name(path)), Some(2.5));
+        let text = format!("Deleted {}", file_name(path));
+        self.status.set(text, Some(2.5));
         self.request_loads();
     }
 
     /// Drops files that are no longer in the folder.
     fn forget(&mut self, files: &[PathBuf]) {
         for file in files {
-            self.cache.remove(file);
-            self.errors.remove(file);
+            self.cache.forget(file);
             self.stars.remove(file);
         }
         if self
@@ -728,25 +605,6 @@ impl App {
         self.list.remove(files);
     }
 
-    fn set_status(&mut self, text: String, ttl: Option<f32>) {
-        self.show_status(StatusKind::Message, text, ttl);
-    }
-
-    fn show_status(&mut self, kind: StatusKind, text: String, ttl: Option<f32>) {
-        self.status = Some(Status {
-            kind,
-            text,
-            since: Instant::now(),
-            ttl,
-        });
-    }
-
-    fn clear_status(&mut self, kind: StatusKind) {
-        if self.status.as_ref().is_some_and(|s| s.kind == kind) {
-            self.status = None;
-        }
-    }
-
     fn pick_folder(&mut self) {
         let mut dialog = rfd::FileDialog::new();
         if let Some(dir) = self.list.dir().or(self.last_dir.as_deref()) {
@@ -755,45 +613,6 @@ impl App {
         if let Some(dir) = dialog.pick_folder() {
             self.open(&dir);
         }
-    }
-
-    fn export_current(&mut self, ctx: &egui::Context) {
-        if let Some(src) = self.current().cloned() {
-            self.export(ctx, src);
-        }
-    }
-
-    /// Ask for a target file, then export at full resolution in the background.
-    fn export(&mut self, ctx: &egui::Context, src: PathBuf) {
-        let stem = src
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let mut dialog = rfd::FileDialog::new()
-            .set_file_name(format!("{stem}.png"))
-            .add_filter("PNG", &["png"])
-            .add_filter("JPEG", &["jpg", "jpeg"]);
-        if let Some(dir) = src.parent() {
-            dialog = dialog.set_directory(dir);
-        }
-        let Some(dst) = dialog.save_file() else {
-            return;
-        };
-        let params = self.settings(&src).stretch;
-        let (tx, ctx) = (self.export_tx.clone(), ctx.clone());
-        self.set_status(format!("Exporting {}…", file_name(&dst)), None);
-        std::thread::spawn(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                blip_core::export::export(&src, &dst, params)
-            }))
-            .unwrap_or_else(|panic| Err(format!("internal error: {}", panic_message(&*panic))));
-            let msg = match result {
-                Ok(path) => Ok(format!("Exported {}", path.display())),
-                Err(e) => Err(format!("Export failed: {e}")),
-            };
-            let _ = tx.send(msg);
-            ctx.request_repaint();
-        });
     }
 
     fn update_title(&mut self, ctx: &egui::Context) {
@@ -881,17 +700,6 @@ fn file_count(n: usize) -> String {
         "1 file".into()
     } else {
         format!("{n} files")
-    }
-}
-
-/// The message of a caught panic.
-fn panic_message(payload: &(dyn Any + Send)) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        s.to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic".into()
     }
 }
 

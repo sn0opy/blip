@@ -25,7 +25,8 @@ impl App {
         } else {
             "Unrejected"
         };
-        self.set_status(format!("{verb} {}", file_name(path)), Some(2.5));
+        let text = format!("{verb} {}", file_name(path));
+        self.status.set(text, Some(2.5));
     }
 
     fn disposing(&self) -> bool {
@@ -47,7 +48,8 @@ impl App {
             return;
         };
         let files = self.list.rejected();
-        self.set_status(disposing_message(handling, files.len()), None);
+        let text = disposing_message(handling, files.len());
+        self.status.set(text, None);
         let (tx, rx) = channel();
         self.disposal = Some(rx);
         let ctx = ctx.clone();
@@ -67,17 +69,17 @@ impl App {
             Err(TryRecvError::Disconnected) => {
                 self.disposal = None;
                 let text = "Handling the rejected files stopped unexpectedly".to_string();
-                return self.set_status(text, Some(8.0));
+                return self.status.set(text, Some(8.0));
             }
         };
         self.disposal = None;
         self.forget(&disposal.done);
         let message = disposed_message(disposal.handling, disposal.done.len());
         match disposal.errors.first() {
-            None => self.set_status(message, Some(2.5)),
+            None => self.status.set(message, Some(2.5)),
             Some(e) => {
                 let failed = format!("{message}, {} failed: {e}", disposal.errors.len());
-                self.set_status(failed, Some(8.0));
+                self.status.set(failed, Some(8.0));
             }
         }
         self.request_loads();

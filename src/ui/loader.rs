@@ -17,11 +17,12 @@
 //! stars"), so a bad file can't take a worker down.
 
 use super::texture::{self, Filter, Level, Overlay, Texture, Uploader};
-use super::{MeasuredStars, panic_message};
-use blip_core::solve::{self, Hint};
+use blip_core::solve::{self, Hint, Solution};
+use blip_core::stars::StarStats;
 use blip_core::tilt::Tilt;
 use blip_core::{image, process, stars};
 use eframe::egui::{self, Pos2, Rect};
+use std::any::Any;
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -92,6 +93,26 @@ pub struct ClipOverlay {
     pub uv: Rect,
 }
 
+pub struct MeasuredStars {
+    pub stats: StarStats,
+    pub tilt: Option<Tilt>,
+    pub detect_ms: f64,
+    pub solution: Result<Solution, String>,
+    pub focal_length_mm: Option<f64>,
+}
+
+impl MeasuredStars {
+    fn failed(reason: &str) -> Self {
+        Self {
+            stats: StarStats::default(),
+            tilt: None,
+            detect_ms: 0.0,
+            solution: Err(reason.to_string()),
+            focal_length_mm: None,
+        }
+    }
+}
+
 pub enum Message {
     Image(PathBuf, Settings, Result<Box<Loaded>, String>),
     OutOfMemory(PathBuf, Settings),
@@ -107,7 +128,7 @@ pub enum Work {
 }
 
 /// What the workers are doing, for the debug panel.
-pub struct Status {
+pub struct LoaderStatus {
     pub workers: [Option<Work>; WORKERS],
     /// Jobs waiting for a worker.
     pub queued_images: usize,
@@ -175,6 +196,12 @@ impl Queue {
         };
         let i = self.stars.iter().position(|p| !loading(p))?;
         self.stars.remove(i)
+    }
+
+    fn start_stars(&mut self, worker: usize, path: PathBuf) -> Task {
+        self.working[worker] = Some(Work::Stars(path.clone()));
+        let raw = self.take_raw(&path);
+        Task::Stars(path, raw)
     }
 
     fn keep_raw(&mut self, raw: Raw) {
@@ -313,9 +340,9 @@ impl Loader {
         self.rx.try_recv().ok()
     }
 
-    pub fn status(&self) -> Status {
+    pub fn status(&self) -> LoaderStatus {
         let q = self.shared.lock();
-        Status {
+        LoaderStatus {
             workers: q.working.clone(),
             queued_images: q.images.len(),
             queued_stars: q.stars.len() + usize::from(q.urgent_stars.is_some()),
@@ -361,32 +388,7 @@ struct Worker {
 impl Worker {
     fn run(&self) {
         loop {
-            let (task, generation) = {
-                let mut q = self.shared.lock();
-                loop {
-                    if let Some(path) = q.urgent_star_job() {
-                        q.working[self.id] = Some(Work::Stars(path.clone()));
-                        let raw = q.take_raw(&path);
-                        break (Task::Stars(path, raw), q.generation);
-                    }
-                    let busy = (q.waiting_for.as_ref())
-                        .is_some_and(|j| q.running_images().any(|r| r == j));
-                    if busy {
-                        q = self.shared.wake.wait(q).unwrap();
-                        continue;
-                    }
-                    if let Some(job) = q.images.pop_front() {
-                        q.working[self.id] = Some(Work::Image(job.clone()));
-                        break (Task::Image(job), q.generation);
-                    }
-                    if let Some(path) = q.next_star_job() {
-                        q.working[self.id] = Some(Work::Stars(path.clone()));
-                        let raw = q.take_raw(&path);
-                        break (Task::Stars(path, raw), q.generation);
-                    }
-                    q = self.shared.wake.wait(q).unwrap();
-                }
-            };
+            let (task, generation) = self.next_task();
             self.repaint();
             let message = match task {
                 Task::Image(job) => self.image(job, generation),
@@ -398,6 +400,29 @@ impl Worker {
                 return; // The app is gone.
             }
             self.repaint();
+        }
+    }
+
+    /// Waits for the most important task and marks it as running.
+    fn next_task(&self) -> (Task, u64) {
+        let mut q = self.shared.lock();
+        loop {
+            if let Some(path) = q.urgent_star_job() {
+                return (q.start_stars(self.id, path), q.generation);
+            }
+            let busy = (q.waiting_for.as_ref()).is_some_and(|j| q.running_images().any(|r| r == j));
+            if busy {
+                q = self.shared.wake.wait(q).unwrap();
+                continue;
+            }
+            if let Some(job) = q.images.pop_front() {
+                q.working[self.id] = Some(Work::Image(job.clone()));
+                return (Task::Image(job), q.generation);
+            }
+            if let Some(path) = q.next_star_job() {
+                return (q.start_stars(self.id, path), q.generation);
+            }
+            q = self.shared.wake.wait(q).unwrap();
         }
     }
 
@@ -491,6 +516,17 @@ impl Worker {
 
         self.shared.lock().working[self.id] = None;
         Some(Message::Stars(path, Box::new(result?)))
+    }
+}
+
+/// The message of a caught panic.
+pub fn panic_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".into()
     }
 }
 

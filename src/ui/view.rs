@@ -1,9 +1,9 @@
 use super::actions::{self, Action};
 use super::gpu::MemoryBudget;
 use super::headers::HeaderIndex;
-use super::loader::Work;
+use super::loader::{Loaded, MeasuredStars, Work};
 use super::tree::Row;
-use super::{App, CacheEntry, ImageToggle, MeasuredStars, STATUS_FADE, draw, file_name};
+use super::{App, ImageToggle, draw, file_name};
 use blip_core::process::StretchParams;
 use eframe::egui::{self, AtomExt as _, Color32, Pos2, Rect, Vec2};
 use std::path::{Path, PathBuf};
@@ -243,7 +243,7 @@ impl App {
                 let mut text = egui::RichText::new(file_name(path));
                 if self.list.is_rejected(path) {
                     text = text.color(draw::RED).strikethrough();
-                } else if self.errors.contains_key(path) {
+                } else if self.cache.error(path).is_some() {
                     text = text.color(draw::RED);
                 }
                 (
@@ -273,10 +273,10 @@ impl App {
 
         let current = self.current().cloned();
         if let Some(cur) = &current
-            && self.cache.contains_key(cur)
+            && self.cache.contains(cur)
         {
             self.shown = Some(cur.clone());
-            self.stale = None;
+            self.cache.discard_stale();
         }
         if !self.mosaic {
             self.zoom_and_pan(ui, &response, rect);
@@ -287,18 +287,10 @@ impl App {
         let mut debug_drawn = false;
 
         let params = (self.shown.as_ref()).map_or(self.params, |p| self.settings(p).stretch);
-        let shown = self.shown.as_ref().and_then(|p| {
-            let stale = self
-                .stale
-                .as_mut()
-                .filter(|(sp, _)| sp == p)
-                .map(|(_, e)| e);
-            self.cache.get_mut(p).or(stale).map(|e| (p, e))
-        });
-        if let Some((path, entry)) = shown {
-            self.tick += 1;
-            entry.last_used = self.tick;
-            let loaded = &entry.loaded;
+        let shown = (self.shown.as_ref())
+            .filter(|p| self.cache.touch(p))
+            .and_then(|p| Some((p, self.cache.rendered(p)?)));
+        if let Some((path, loaded)) = shown {
             let is_current = current.as_ref() == Some(path);
             let flash = loaded
                 .clip_overlay
@@ -375,11 +367,11 @@ impl App {
             }
 
             if self.show_info {
-                let text = info_text(path, entry, stars, params);
+                let text = info_text(path, loaded, stars, params);
                 draw::text_box(&painter, rect.left_top() + Vec2::new(10.0, 8.0), &text, 1.0);
             }
             if let Some(general) = &debug_general {
-                let text = format!("{}\n{general}", debug_image(entry, stars, params));
+                let text = format!("{}\n{general}", debug_image(loaded, stars, params));
                 draw::text_box_aligned(&painter, debug_pos, egui::Align2::RIGHT_TOP, &text, 1.0);
                 debug_drawn = true;
             }
@@ -408,10 +400,10 @@ impl App {
         }
 
         if let Some(cur) = &current {
-            if let Some(err) = self.errors.get(cur) {
+            if let Some(err) = self.cache.error(cur) {
                 let text = format!("{}: {err}", file_name(cur));
                 draw::text_box(&painter, bottom_left + Vec2::new(10.0, -48.0), &text, 1.0);
-            } else if !self.cache.contains_key(cur) {
+            } else if !self.cache.contains(cur) {
                 let spinner_rect = Rect::from_min_size(
                     rect.right_top() + Vec2::new(-34.0, 10.0),
                     Vec2::splat(22.0),
@@ -423,7 +415,8 @@ impl App {
             let border = egui::Stroke::new(REJECTED_BORDER, draw::RED);
             painter.rect_stroke(rect, 0.0, border, egui::StrokeKind::Inside);
         }
-        self.status_line(ui, &painter, bottom_left);
+        let status_pos = bottom_left + Vec2::new(10.0, -26.0);
+        self.status.paint(ui.ctx(), &painter, status_pos);
     }
 
     /// Mouse wheel zooms around the cursor, dragging pans, double-click resets.
@@ -453,12 +446,6 @@ impl App {
 
     /// Debug lines that don't depend on the shown image.
     fn debug_general(&self) -> String {
-        let gpu_bytes: usize = self
-            .cache
-            .values()
-            .chain(self.stale.as_ref().map(|(_, e)| e))
-            .map(|e| e.loaded.gpu_bytes())
-            .sum();
         let status = self.loader.status();
         let loading = |p: &PathBuf| {
             (status.workers.iter()).any(|w| matches!(w, Some(Work::Image(j)) if j.path == *p))
@@ -466,9 +453,9 @@ impl App {
         let mut neighbors: Vec<(isize, char)> = (self.prefetch_window().into_iter())
             .filter(|(o, _)| *o != 0)
             .map(|(o, p)| {
-                let state = if self.cache.contains_key(p) {
+                let state = if self.cache.contains(p) {
                     '●'
-                } else if self.errors.contains_key(p) {
+                } else if self.cache.error(p).is_some() {
                     '×'
                 } else if loading(p) {
                     '◐'
@@ -491,11 +478,11 @@ impl App {
                 "cache {}/{} images · {} MB on GPU · {} star measurements · {} headers",
                 self.cache.len(),
                 self.cache_limit(),
-                gpu_bytes / (1 << 20),
+                self.cache.gpu_bytes() / (1 << 20),
                 self.stars.len(),
                 self.list.header_count(),
             ),
-            match self.memory_budget {
+            match self.cache.memory_budget() {
                 Some(m) => format!("GPU {} · memory: {}", self.gpu_info, memory(m)),
                 None => format!("GPU {}", self.gpu_info),
             },
@@ -519,26 +506,6 @@ impl App {
             lines.push(format!("worker {}: {work}", i + 1));
         }
         lines.join("\n")
-    }
-
-    fn status_line(&mut self, ui: &egui::Ui, painter: &egui::Painter, bottom_left: Pos2) {
-        let Some(status) = &self.status else { return };
-        let age = status.since.elapsed().as_secs_f32();
-        let alpha = match status.ttl {
-            Some(ttl) if age >= ttl => 1.0 - ((age - ttl) / STATUS_FADE).min(1.0),
-            _ => 1.0,
-        };
-        if alpha <= 0.0 {
-            self.status = None;
-            return;
-        }
-        let pos = bottom_left + Vec2::new(10.0, -26.0);
-        draw::text_box(painter, pos, &status.text, alpha);
-        match status.ttl {
-            Some(ttl) if age < ttl => ui.ctx().request_repaint_after_secs(ttl - age),
-            Some(_) => ui.ctx().request_repaint(),
-            None => {}
-        }
     }
 }
 
@@ -668,8 +635,7 @@ fn memory(m: MemoryBudget) -> String {
 }
 
 /// Debug lines for the shown image: geometry, timings, stretch, saturation level.
-fn debug_image(entry: &CacheEntry, stars: Option<&MeasuredStars>, params: StretchParams) -> String {
-    let l = &entry.loaded;
+fn debug_image(l: &Loaded, stars: Option<&MeasuredStars>, params: StretchParams) -> String {
     let mode = if l.bin == 1 {
         "full res".to_string()
     } else {
@@ -748,11 +714,10 @@ fn debug_solve(s: &MeasuredStars) -> String {
 
 fn info_text(
     path: &Path,
-    entry: &CacheEntry,
+    l: &Loaded,
     stars: Option<&MeasuredStars>,
     params: StretchParams,
 ) -> String {
-    let l = &entry.loaded;
     let mut lines = vec![file_name(path)];
     if !l.info.is_empty() {
         lines.push(l.info.clone());

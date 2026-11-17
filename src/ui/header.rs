@@ -112,9 +112,8 @@ impl App {
             self.show_header = false;
             return;
         };
-        let stale = (self.stale.as_ref()).filter(|(p, _)| *p == path);
-        let cards = (self.cache.get(&path).or(stale.map(|(_, e)| e))).map(|e| &e.loaded.cards);
-        let error = self.errors.get(&path);
+        let cards = self.cache.rendered(&path).map(|l| &l.cards);
+        let error = self.cache.error(&path);
         let header_table = &mut self.header_table;
         let mut close = false;
         let modal = egui::Modal::new(egui::Id::unique("header")).show(ctx, |ui| {

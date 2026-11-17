@@ -41,7 +41,7 @@ impl App {
             self.request_loads();
         }
         match action {
-            Some(MenuAction::Status(text)) => self.set_status(text, Some(2.5)),
+            Some(MenuAction::Status(text)) => self.status.set(text, Some(2.5)),
             Some(MenuAction::Export(path)) => self.export(ctx, path),
             Some(MenuAction::Header(path)) => {
                 if let Some(i) = self.list.files().iter().position(|p| *p == path) {

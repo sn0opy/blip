@@ -18,7 +18,7 @@ impl App {
         };
         let keys = keys(Action::Boost(1));
         let text = format!("Stretch boost {state}: background {target:.0}% ({keys} to change)");
-        self.set_status(text, Some(2.0));
+        self.status.set(text, Some(2.0));
     }
 
     pub(super) fn toggle_actual_size(&mut self) {
@@ -46,7 +46,7 @@ impl App {
         } else {
             format!("Zoom to fit ({key} for 1:1)")
         };
-        self.set_status(text, Some(2.0));
+        self.status.set(text, Some(2.0));
     }
 
     pub(super) fn set_actual_size(&mut self, on: bool) {
@@ -57,7 +57,8 @@ impl App {
 
     pub(super) fn toggle_full_res(&mut self) {
         if self.prefs.binning == BinningPref::Bin1 {
-            self.set_status("Binning is set to 1x1 in the settings".into(), Some(2.5));
+            let text = "Binning is set to 1x1 in the settings".into();
+            self.status.set(text, Some(2.5));
             return;
         }
         let was_full = self.loads_full_res();
@@ -67,7 +68,7 @@ impl App {
         } else {
             "Binned preview"
         };
-        self.set_status(mode.into(), Some(2.0));
+        self.status.set(mode.into(), Some(2.0));
         if self.loads_full_res() != was_full {
             self.reload_all();
         }
@@ -78,12 +79,10 @@ impl App {
             return;
         };
         if self.flash_clip.toggle(&cur)
-            && self
-                .cache
-                .get(&cur)
-                .is_some_and(|e| e.loaded.clip_overlay.is_none())
+            && (self.cache.get(&cur)).is_some_and(|l| l.clip_overlay.is_none())
         {
-            self.set_status("No clipped pixels in this image".into(), Some(2.0));
+            let text = "No clipped pixels in this image".into();
+            self.status.set(text, Some(2.0));
         }
     }
 
@@ -98,7 +97,8 @@ impl App {
             return;
         };
         if self.tilt_view.toggle(&cur) && self.stars.get(&cur).is_some_and(|s| s.tilt.is_none()) {
-            self.set_status("Not enough stars to measure tilt".into(), Some(2.5));
+            let text = "Not enough stars to measure tilt".into();
+            self.status.set(text, Some(2.5));
         }
     }
 
@@ -110,8 +110,10 @@ impl App {
             return;
         }
         match self.stars.get(&cur).map(|s| &s.solution) {
-            Some(Err(e)) => self.set_status(format!("Plate solve failed: {e}"), Some(4.0)),
-            None => self.set_status("Plate solving…".into(), Some(2.0)),
+            Some(Err(e)) => self
+                .status
+                .set(format!("Plate solve failed: {e}"), Some(4.0)),
+            None => self.status.set("Plate solving…".into(), Some(2.0)),
             Some(Ok(_)) => {}
         }
     }
@@ -121,7 +123,7 @@ impl App {
         self.mosaic = !self.mosaic;
         let state = if self.mosaic { "on" } else { "off" };
         let key = key_hint(Action::Mosaic);
-        self.set_status(
+        self.status.set(
             format!("Corner mosaic {state} ({key} to toggle)"),
             Some(2.0),
         );
