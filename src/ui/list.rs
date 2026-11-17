@@ -137,8 +137,10 @@ impl FileList {
         self.files.retain(|p| !gone.contains(p.as_path()));
         if self.files.len() != shown {
             self.selected = kept_before_selected.min(self.files.len().saturating_sub(1));
-            self.anchor = self.current().cloned();
             self.tree.rebuild(&self.files, self.grouped);
+        }
+        if self.anchor.as_deref().is_some_and(|a| gone.contains(a)) {
+            self.anchor = self.current().cloned();
         }
         self.scroll_to_selected = true;
     }
@@ -460,6 +462,17 @@ mod tests {
         assert_eq!(current(&list), "/r/a2");
         filter(&mut list, "");
         assert_eq!(list.files(), ["/r/a1", "/r/a2"].map(PathBuf::from));
+    }
+
+    #[test]
+    fn removing_the_hidden_selection_keeps_the_image_shown_instead() {
+        let mut list = list(&["/r/a1", "/r/b1", "/r/a2"]);
+        list.select(1);
+        filter(&mut list, "a");
+        assert_eq!(current(&list), "/r/a2");
+        list.remove(&[PathBuf::from("/r/b1")]);
+        filter(&mut list, "");
+        assert_eq!(current(&list), "/r/a2");
     }
 
     #[test]
