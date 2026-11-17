@@ -96,23 +96,22 @@ impl App {
             ui.label(consequence);
             ui.add_space(8.0);
             let buttons = ui.horizontal(|ui| {
-                let delete = ui.add(delete_button).clicked();
-                (delete, ui.button("Cancel (Esc)").clicked())
+                let delete = ui.add(delete_button);
+                (delete, ui.button("Cancel (Esc)"))
             });
             buttons.inner
         });
-        let (delete, cancel) = modal.inner;
+        let (delete, cancel) = &modal.inner;
+        let enter_clicks_focused_button = delete.has_focus() || cancel.has_focus();
         let (yes, no) = ctx.input_mut(|i| {
             let pressed = |i: &mut egui::InputState, key| i.consume_key(Modifiers::NONE, key);
-            let yes = pressed(i, Key::Enter) || pressed(i, Key::Y);
-            (yes, pressed(i, Key::N))
+            let enter = !enter_clicks_focused_button && pressed(i, Key::Enter);
+            (enter || pressed(i, Key::Y), pressed(i, Key::N))
         });
-        let decision = if no {
+        let decision = if cancel.clicked() || no || modal.should_close() {
             Some(false)
-        } else if yes || delete {
+        } else if delete.clicked() || yes {
             Some(true)
-        } else if cancel || modal.should_close() {
-            Some(false)
         } else {
             None
         };
