@@ -384,7 +384,8 @@ fn parse_header(xml: &[u8]) -> Result<(Layout, Header, Vec<Card>), String> {
             Event::End(_) => {
                 depth -= 1;
                 if let Some(key) = text_for.take() {
-                    properties.push((key.to_string(), std::mem::take(&mut text)));
+                    let value = std::mem::take(&mut text).trim().to_string();
+                    properties.push((key.to_string(), value));
                 }
                 if depth == 1 && layout.is_some() {
                     break;
@@ -739,7 +740,9 @@ mod tests {
             <FITSKeyword name="EXPTIME" value="120." comment="[s]"/>
             <FITSKeyword name="COMMENT" value="" comment="a comment"/>
             <Property id="Observation:Object:Name" type="String">from property</Property>
-            <Property id="Instrument:Filter:Name" type="String">Sloan r&apos; &#x2014; &lt;a&gt;</Property>
+            <Property id="Instrument:Filter:Name" type="String">
+                Sloan r&apos; &#x2014; &lt;a&gt;
+            </Property>
             <Property id="Instrument:Sensor:Temperature" type="Float32" value=" -10.5"/>
             <Property id="Instrument:Camera:Gain" type="Float32" value="0.8"/>"#;
         let img = parse(&one(
