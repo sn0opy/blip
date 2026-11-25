@@ -78,7 +78,6 @@ impl Format {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Codec {
     Zlib,
-    /// Also LZ4-HC, which differs only in how it compresses.
     Lz4,
     Zstd,
 }
@@ -149,7 +148,7 @@ impl Compression {
         if total(|b| b.0) != Some(len) || total(|b| b.1) != Some(raw_len) {
             return Err("XISF subblock sizes don't add up".into());
         }
-        if let Some(&(c, u)) = (subblocks.iter()).find(|(c, u)| *u / codec.max_ratio() > *c) {
+        if let Some(&(c, u)) = subblocks.iter().find(|(c, u)| *u / codec.max_ratio() > *c) {
             return Err(format!(
                 "corrupt compressed XISF data: {c} bytes can't hold {u} bytes"
             ));
@@ -175,7 +174,6 @@ struct Layout {
     /// Channels stored one after another (Planar) rather than interleaved (Normal).
     planar: bool,
     big_endian: bool,
-    /// Attachment position and size in the file.
     pos: usize,
     len: usize,
     compression: Option<Compression>,
@@ -449,7 +447,6 @@ fn parse_header(xml: &[u8]) -> Result<(Layout, Header, Vec<Card>), String> {
     Ok((layout, keywords, cards))
 }
 
-/// The card of a FITSKeyword element, unless it has neither a name nor a comment.
 fn keyword_card(attrs: &[(String, String)]) -> Option<Card> {
     let name = lookup(attrs, "name").unwrap_or_default().trim();
     let comment = lookup(attrs, "comment").unwrap_or_default().trim();
@@ -553,6 +550,11 @@ fn decompress(src: &[u8], c: &Compression, dst: &mut [u8]) -> Result<(), String>
 }
 
 fn decompress_part(codec: Codec, src: &[u8], dst: &mut [u8]) -> Result<(), String> {
+    // PixInsight stores blocks that don't shrink uncompressed.
+    if src.len() == dst.len() {
+        dst.copy_from_slice(src);
+        return Ok(());
+    }
     let corrupt = |e: &dyn std::fmt::Display| format!("corrupt compressed XISF data: {e}");
     let n = match codec {
         Codec::Zlib => {
@@ -888,15 +890,30 @@ mod tests {
 
                     let (a, b) = stored.split_at(stored.len() / 3);
                     let (ca, cb) = (compress(codec, a), compress(codec, b));
+                    let base = attrs;
                     let attrs = format!(
-                        r#"{attrs} subblocks="{},{}:{},{}""#,
+                        r#"{base} subblocks="{},{}:{},{}""#,
                         ca.len(),
                         a.len(),
                         cb.len(),
                         b.len()
                     );
-                    let parts = [ca, cb].concat();
+                    let parts = [ca.as_slice(), &cb].concat();
                     assert_eq!(data(&one(&attrs, "", &parts)), expected, "{spec} subblocks");
+
+                    let attrs = format!(
+                        r#"{base} subblocks="{},{}:{},{}""#,
+                        a.len(),
+                        a.len(),
+                        cb.len(),
+                        b.len()
+                    );
+                    let parts = [a, &cb].concat();
+                    assert_eq!(
+                        data(&one(&attrs, "", &parts)),
+                        expected,
+                        "{spec} raw subblock"
+                    );
                 }
             }
         }
